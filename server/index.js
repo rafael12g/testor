@@ -7,85 +7,69 @@ import {
   getDbProvider,
   getDbPath,
   getRecentBeaconEvents,
+  getServerLogs,
+  getRaceHistory,
   initDb,
   insertBeaconPing,
-  pruneHistory,
+  insertServerLog,
+  insertRaceEvent,
+  pruneBeacons,
+  pruneServerLogs,
 } from './db.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
-const MAX_LOGS = 500;
-const serverLogs = [];
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
-function addLog(level, message, meta = null) {
-  const entry = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    level,
-    message,
-    meta,
-    timestamp: Date.now(),
-  };
-  serverLogs.push(entry);
-  if (serverLogs.length > MAX_LOGS) {
-    serverLogs.splice(0, serverLogs.length - MAX_LOGS);
-  }
+// ─── helpers ───
+
+function clamp(v, lo, hi) { return Math.min(Math.max(v, lo), hi); }
+function toNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+function broadcast(type, payload) {
+  const msg = JSON.stringify({ type, payload, timestamp: Date.now() });
+  wss.clients.forEach(c => { if (c.readyState === 1) c.send(msg); });
+}
+
+async function log(level, message, meta = null) {
+  const entry = await insertServerLog(level, message, meta);
+  broadcast('log', entry);
   return entry;
 }
 
-function broadcast(type, payload) {
-  const message = JSON.stringify({ type, payload, timestamp: Date.now() });
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) {
-      client.send(message);
-    }
-  });
-}
+// ─── websocket ───
 
-wss.on('connection', ws => {
-  const log = addLog('info', 'WebSocket client connecté');
+wss.on('connection', async ws => {
+  await log('info', 'WebSocket client connecté');
   ws.send(JSON.stringify({ type: 'connected', payload: { ok: true }, timestamp: Date.now() }));
-  ws.send(JSON.stringify({ type: 'log', payload: log, timestamp: Date.now() }));
-
-  ws.on('close', () => {
-    const closeLog = addLog('info', 'WebSocket client déconnecté');
-    broadcast('log', closeLog);
-  });
+  ws.on('close', () => log('info', 'WebSocket client déconnecté'));
 });
+
+// ─── middleware ───
 
 app.use(cors());
 app.use(express.json());
 
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function toNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
+// ─── routes ───
 
 app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
-    service: 'fake-backend-sql',
-    dbProvider: getDbProvider(),
-    dbPath: getDbPath(),
-    now: Date.now(),
-  });
+  res.json({ ok: true, service: 'backend-sql', dbProvider: getDbProvider(), dbPath: getDbPath(), now: Date.now() });
 });
 
-app.get('/api/logs', (req, res) => {
-  const limit = clamp(toNumber(req.query.limit, 100), 1, 500);
-  const items = [...serverLogs].slice(serverLogs.length - limit).reverse();
+// --- Logs (vrais logs stockés en BDD) ---
+
+app.get('/api/logs', async (req, res) => {
+  const limit = clamp(toNum(req.query.limit, 80), 1, 500);
+  const items = await getServerLogs(limit);
   res.json({ ok: true, items, count: items.length });
 });
 
+// --- Beacon pings ---
+
 app.post('/api/beacons/ping', async (req, res) => {
   const body = req.body || {};
-
   const raceId = String(body.raceId || '').trim();
   const teamCode = String(body.teamCode || '').trim().toUpperCase();
   const teamName = String(body.teamName || '').trim();
@@ -95,33 +79,23 @@ app.post('/api/beacons/ping', async (req, res) => {
   }
 
   const payload = {
-    raceId,
-    teamCode,
-    teamName,
-    lat: clamp(toNumber(body.lat), -90, 90),
-    lng: clamp(toNumber(body.lng), -180, 180),
-    accuracy: clamp(toNumber(body.accuracy, 7), 1, 100),
-    speedKmh: clamp(toNumber(body.speedKmh, 0), 0, 80),
-    heading: clamp(toNumber(body.heading, 0), 0, 360),
-    battery: clamp(toNumber(body.battery, 100), 1, 100),
+    raceId, teamCode, teamName,
+    lat: clamp(toNum(body.lat), -90, 90),
+    lng: clamp(toNum(body.lng), -180, 180),
+    accuracy: clamp(toNum(body.accuracy, 7), 1, 100),
+    speedKmh: clamp(toNum(body.speedKmh, 0), 0, 80),
+    heading: clamp(toNum(body.heading, 0), 0, 360),
+    battery: clamp(toNum(body.battery, 100), 1, 100),
     createdAt: Date.now(),
   };
 
   try {
     await insertBeaconPing(payload);
-    await pruneHistory(5000);
-
-    const log = addLog('info', `Ping ${payload.teamCode} @ ${payload.raceId}`, {
-      teamCode: payload.teamCode,
-      raceId: payload.raceId,
-      speedKmh: payload.speedKmh,
-      battery: payload.battery,
-    });
+    await pruneBeacons(5000);
+    await log('info', `Ping ${payload.teamCode} @ course ${payload.raceId}`, { teamCode: payload.teamCode, raceId: payload.raceId, speedKmh: payload.speedKmh, battery: payload.battery });
     broadcast('beacon_ping', payload);
-    broadcast('log', log);
-  } catch (error) {
-    const log = addLog('error', 'Erreur insertion ping', { error: String(error?.message || error) });
-    broadcast('log', log);
+  } catch (err) {
+    await log('error', 'Erreur insertion ping', { error: String(err?.message || err) });
     return res.status(500).json({ ok: false, error: 'Erreur backend SQL' });
   }
 
@@ -130,57 +104,70 @@ app.post('/api/beacons/ping', async (req, res) => {
 
 app.get('/api/races/:raceId/beacons', async (req, res) => {
   const raceId = String(req.params.raceId || '').trim();
-  if (!raceId) {
-    return res.status(400).json({ ok: false, error: 'raceId requis' });
-  }
-
-  const dbRows = await getBeaconSnapshotByRace(raceId);
-  const rows = dbRows.map(row => ({
-    id: row.id,
-    raceId: row.race_id,
-    teamCode: row.team_code,
-    teamName: row.team_name,
-    lat: row.lat,
-    lng: row.lng,
-    accuracy: row.accuracy,
-    speedKmh: row.speed_kmh,
-    heading: row.heading,
-    battery: row.battery,
-    updatedAt: row.created_at,
+  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+  const rows = (await getBeaconSnapshotByRace(raceId)).map(r => ({
+    id: r.id, raceId: r.race_id, teamCode: r.team_code, teamName: r.team_name,
+    lat: r.lat, lng: r.lng, accuracy: r.accuracy, speedKmh: r.speed_kmh,
+    heading: r.heading, battery: r.battery, updatedAt: r.created_at,
   }));
-
-  return res.json({ ok: true, items: rows, count: rows.length });
+  res.json({ ok: true, items: rows, count: rows.length });
 });
 
 app.get('/api/beacons/events', async (req, res) => {
-  const limit = clamp(toNumber(req.query.limit, 20), 1, 200);
-
-  const dbRows = await getRecentBeaconEvents(limit);
-  const rows = dbRows.map(row => ({
-    id: row.id,
-    raceId: row.race_id,
-    teamCode: row.team_code,
-    teamName: row.team_name,
-    lat: row.lat,
-    lng: row.lng,
-    accuracy: row.accuracy,
-    speedKmh: row.speed_kmh,
-    heading: row.heading,
-    battery: row.battery,
-    updatedAt: row.created_at,
+  const limit = clamp(toNum(req.query.limit, 20), 1, 200);
+  const rows = (await getRecentBeaconEvents(limit)).map(r => ({
+    id: r.id, raceId: r.race_id, teamCode: r.team_code, teamName: r.team_name,
+    lat: r.lat, lng: r.lng, accuracy: r.accuracy, speedKmh: r.speed_kmh,
+    heading: r.heading, battery: r.battery, updatedAt: r.created_at,
   }));
-
-  return res.json({ ok: true, items: rows, count: rows.length });
+  res.json({ ok: true, items: rows, count: rows.length });
 });
 
+// --- Race events (historique des courses) ---
+
+app.post('/api/races/:raceId/events', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  const body = req.body || {};
+  const eventType = String(body.eventType || '').trim();
+  if (!raceId || !eventType) return res.status(400).json({ ok: false, error: 'raceId et eventType requis' });
+  try {
+    const entry = await insertRaceEvent(raceId, eventType, body.payload || null);
+    await log('info', `Event course ${raceId}: ${eventType}`, { raceId, eventType });
+    broadcast('race_event', entry);
+    return res.status(201).json({ ok: true, event: entry });
+  } catch (err) {
+    await log('error', 'Erreur insertion event course', { error: String(err?.message || err) });
+    return res.status(500).json({ ok: false, error: 'Erreur backend SQL' });
+  }
+});
+
+app.get('/api/races/:raceId/history', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  const limit = clamp(toNum(req.query.limit, 50), 1, 200);
+  const items = await getRaceHistory(raceId || null, limit);
+  res.json({ ok: true, items, count: items.length });
+});
+
+app.get('/api/history', async (req, res) => {
+  const limit = clamp(toNum(req.query.limit, 50), 1, 200);
+  const items = await getRaceHistory(null, limit);
+  res.json({ ok: true, items, count: items.length });
+});
+
+// ─── start ───
+
 initDb()
-  .then(() => {
-    addLog('info', `Backend démarré (${getDbProvider()})`, { dbPath: getDbPath() });
+  .then(async () => {
+    await log('info', `Backend démarré (${getDbProvider()})`, { dbPath: getDbPath() });
+    await pruneServerLogs(1000);
     httpServer.listen(PORT, () => {
-      console.log(`Backend SQL prêt sur http://localhost:${PORT}`);
+      console.log(`Backend SQL prêt → http://localhost:${PORT}  (${getDbProvider()})`);
+      console.log(`WebSocket        → ws://localhost:${PORT}/ws`);
+      console.log(`Logs API         → http://localhost:${PORT}/api/logs`);
+      console.log(`Historique       → http://localhost:${PORT}/api/history`);
     });
   })
-  .catch((error) => {
-    console.error('Erreur init DB', error);
+  .catch(err => {
+    console.error('ERREUR init DB:', err);
     process.exit(1);
   });

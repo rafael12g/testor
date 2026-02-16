@@ -4,7 +4,7 @@ import './App.css';
 import { MapContainer, TileLayer, Marker, Popup, CircleMarker } from 'react-leaflet';
 import { Navigation, MapPin, Users, Flag, ShieldCheck, LogIn, Activity, LineChart } from 'lucide-react';
 import VueBeaconMap from './components/VueBeaconMap';
-import { fetchBeaconSnapshot, fetchRecentBeaconEvents, fetchServerLogs, sendBeaconPing } from './sim/fakeBackendApi';
+import { fetchBeaconSnapshot, fetchRecentBeaconEvents, fetchServerLogs, fetchRaceHistory, sendBeaconPing, sendRaceEvent } from './sim/fakeBackendApi';
 
 // --- UTILITAIRES ---
 const DEFAULT_START = { lat: 44.837789, lng: -0.57918 };
@@ -70,6 +70,8 @@ export default function OrienteeringApp() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [beaconEvents, setBeaconEvents] = useState([]);
   const [serverLogs, setServerLogs] = useState([]);
+  const [adminLogs, setAdminLogs] = useState([]);
+  const [raceHistory, setRaceHistory] = useState([]);
   const [socketState, setSocketState] = useState('offline');
   const [runnerSim, setRunnerSim] = useState(() => ({
     distanceKm: 0,
@@ -204,6 +206,22 @@ export default function OrienteeringApp() {
       { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
+  }, [user]);
+
+  useEffect(() => {
+    if (user?.role !== 'admin') { setAdminLogs([]); return undefined; }
+    const poll = async () => { try { setAdminLogs(await fetchServerLogs(80)); } catch { setAdminLogs([]); } };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => clearInterval(id);
+  }, [user]);
+
+  useEffect(() => {
+    if (user?.role !== 'orga') { setRaceHistory([]); return undefined; }
+    const poll = async () => { try { setRaceHistory(await fetchRaceHistory(null, 40)); } catch { setRaceHistory([]); } };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => clearInterval(id);
   }, [user]);
 
   useEffect(() => {
@@ -584,6 +602,7 @@ export default function OrienteeringApp() {
             orgaAccounts={orgaAccounts}
             createOrgaAccount={createOrgaAccount}
             deleteOrgaAccount={deleteOrgaAccount}
+            adminLogs={adminLogs}
           />
         )}
         {user.role === 'orga' && (
@@ -602,6 +621,7 @@ export default function OrienteeringApp() {
             beaconEvents={beaconEvents}
             serverLogs={serverLogs}
             socketState={socketState}
+            raceHistory={raceHistory}
           />
         )}
         {user.role === 'runner' && (
@@ -641,6 +661,7 @@ function OrgaPanel({
   beaconEvents,
   serverLogs,
   socketState,
+  raceHistory,
 }) {
   const [selectedRace, setSelectedRace] = useState(null);
   const [newTeamName, setNewTeamName] = useState("");
@@ -712,6 +733,26 @@ function OrgaPanel({
             </li>
           ))}
         </ul>
+
+        <div className="section-divider" />
+        <h3 className="card-title">📜 Historique des courses</h3>
+        <p className="muted">Événements enregistrés en BDD : créations, modifications, check-ins…</p>
+        <div className="race-history-panel">
+          {raceHistory.length === 0 && <p className="muted">Aucun événement enregistré.</p>}
+          <ul className="history-list">
+            {raceHistory.map((evt, i) => (
+              <li key={evt.id || i} className="history-row">
+                <span className={`history-badge history-badge--${evt.event_type || evt.eventType || 'info'}`}>
+                  {evt.event_type || evt.eventType || '?'}
+                </span>
+                <span className="history-msg">
+                  {evt.race_id ? `Course #${evt.race_id}` : ''} {evt.payload ? (typeof evt.payload === 'string' ? evt.payload : JSON.stringify(evt.payload)) : ''}
+                </span>
+                <span className="history-time">{new Date(evt.ts || evt.timestamp).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       </section>
 
       <section className="card">
@@ -823,7 +864,7 @@ function OrgaPanel({
   );
 }
 
-function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccounts, createOrgaAccount, deleteOrgaAccount }) {
+function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccounts, createOrgaAccount, deleteOrgaAccount, adminLogs }) {
   const [newOrgaName, setNewOrgaName] = useState('');
   const [newOrgaPassword, setNewOrgaPassword] = useState('');
   const [orgaMessage, setOrgaMessage] = useState('');
@@ -914,6 +955,29 @@ function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccount
           </li>
         ))}
       </ul>
+
+      <div className="section-divider" />
+      <div className="card-header">
+        <div>
+          <h3 className="card-title">📋 Logs serveur (BDD)</h3>
+          <p className="muted">Logs réels stockés en base de données SQL, mis à jour automatiquement.</p>
+        </div>
+      </div>
+      <div className="admin-logs-panel">
+        {adminLogs.length === 0 && <p className="muted">Aucun log enregistré.</p>}
+        <ul className="log-list">
+          {adminLogs.map((log, i) => (
+            <li key={log.id || i} className="log-row">
+              <span className={`log-level log-level--${log.level || 'info'}`}>
+                {String(log.level || 'info').toUpperCase()}
+              </span>
+              <span className="log-message">{log.message}</span>
+              {log.meta && <span className="log-meta">{typeof log.meta === 'string' ? log.meta : JSON.stringify(log.meta)}</span>}
+              <span className="log-time">{new Date(log.ts || log.timestamp).toLocaleTimeString()}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
