@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   getBeaconSnapshotByRace,
   getDbProvider,
@@ -152,6 +154,19 @@ app.get('/api/history', async (req, res) => {
   const limit = clamp(toNum(req.query.limit, 50), 1, 200);
   const items = await getRaceHistory(null, limit);
   res.json({ ok: true, items, count: items.length });
+});
+
+// ─── serve frontend (production / Docker) ───
+
+const __dirname2 = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(__dirname2, '..', 'dist');
+
+// Serve built assets (JS, CSS, images…)
+app.use(express.static(distDir));
+
+// SPA fallback: any non-API GET → index.html
+app.get('/{*path}', (_req, res) => {
+  res.sendFile(path.join(distDir, 'index.html'));
 });
 
 // ─── start ───

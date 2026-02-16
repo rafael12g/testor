@@ -1,4 +1,29 @@
 services:
+  # ── Application (frontend + API) ──────────────────────────────
+  app:
+    build: .
+    container_name: testor-app
+    restart: unless-stopped
+    ports:
+      - "80:8787"
+    environment:
+      PORT: 8787
+      # --- Mode SQLite (par défaut, zero config) ---
+      DB_PROVIDER: sqlite
+      # --- Décommenter ci-dessous pour utiliser MySQL ---
+      # DB_PROVIDER: mysql
+      # DB_HOST: mysql
+      # DB_PORT: 3306
+      # DB_USER: orienteering
+      # DB_PASSWORD: orienteering
+      # DB_NAME: orienteering
+    volumes:
+      - app_data:/app/server/data
+    # depends_on:
+    #   mysql:
+    #     condition: service_healthy
+
+  # ── MySQL (optionnel, décommenter si DB_PROVIDER=mysql) ───────
   mysql:
     image: mysql:8.4
     container_name: testor-mysql
@@ -12,7 +37,15 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - mysql
 
+  # ── phpMyAdmin (optionnel) ────────────────────────────────────
   phpmyadmin:
     image: phpmyadmin/phpmyadmin:latest
     container_name: testor-phpmyadmin
@@ -25,7 +58,11 @@ services:
     ports:
       - "8080:80"
     depends_on:
+      mysql:
+        condition: service_healthy
+    profiles:
       - mysql
 
 volumes:
+  app_data:
   mysql_data:
