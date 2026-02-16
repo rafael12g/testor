@@ -1,3 +1,12 @@
+# ╔═══════════════════════════════════════════════════════════════╗
+# ║  Testor — Orienteering Simulation Platform                    ║
+# ║                                                               ║
+# ║  Mode SQLite : docker compose up -d --build                   ║
+# ║  Mode MySQL  : docker compose --profile mysql up -d --build   ║
+# ║                                                               ║
+# ║  Config dans .env.docker (DB_PROVIDER=sqlite ou mysql)        ║
+# ╚═══════════════════════════════════════════════════════════════╝
+
 services:
   # ── Application (frontend + API) ──────────────────────────────
   app:
@@ -6,24 +15,15 @@ services:
     restart: unless-stopped
     ports:
       - "80:8787"
-    environment:
-      PORT: 8787
-      # --- Mode SQLite (par défaut, zero config) ---
-      DB_PROVIDER: sqlite
-      # --- Décommenter ci-dessous pour utiliser MySQL ---
-      # DB_PROVIDER: mysql
-      # DB_HOST: mysql
-      # DB_PORT: 3306
-      # DB_USER: orienteering
-      # DB_PASSWORD: orienteering
-      # DB_NAME: orienteering
+    env_file: .env.docker
     volumes:
       - app_data:/app/server/data
-    # depends_on:
-    #   mysql:
-    #     condition: service_healthy
+    depends_on:
+      mysql:
+        condition: service_healthy
+        required: false
 
-  # ── MySQL (optionnel, décommenter si DB_PROVIDER=mysql) ───────
+  # ── MySQL ─────────────────────────────────────────────────────
   mysql:
     image: mysql:8.4
     container_name: testor-mysql
@@ -34,18 +34,20 @@ services:
       MYSQL_USER: orienteering
       MYSQL_PASSWORD: orienteering
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./server/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 30s
     profiles:
       - mysql
 
-  # ── phpMyAdmin (optionnel) ────────────────────────────────────
+  # ── phpMyAdmin ────────────────────────────────────────────────
   phpmyadmin:
     image: phpmyadmin/phpmyadmin:latest
     container_name: testor-phpmyadmin

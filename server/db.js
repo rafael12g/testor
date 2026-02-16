@@ -107,9 +107,11 @@ const SQLITE_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_re_race ON race_events(race_id, created_at DESC);
 `;
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 async function initMySql() {
   const mysql = await import('mysql2/promise');
-  mysqlPool = mysql.default.createPool({
+  const cfg = {
     host: process.env.DB_HOST || '127.0.0.1',
     port: Number(process.env.DB_PORT || 3306),
     user: process.env.DB_USER || 'orienteering',
@@ -117,7 +119,28 @@ async function initMySql() {
     database: process.env.DB_NAME || 'orienteering',
     waitForConnections: true,
     connectionLimit: 10,
-  });
+  };
+
+  // Retry loop — MySQL peut mettre 10-30s à démarrer dans Docker
+  const MAX_RETRIES = 20;
+  const DELAY_MS = 3000;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      mysqlPool = mysql.default.createPool(cfg);
+      // Test de connexion réel
+      const conn = await mysqlPool.getConnection();
+      conn.release();
+      console.log(`MySQL connecté (tentative ${attempt})`);
+      break;
+    } catch (err) {
+      console.log(`MySQL pas prêt (tentative ${attempt}/${MAX_RETRIES}) — ${err.code || err.message}`);
+      if (mysqlPool) { try { await mysqlPool.end(); } catch {} mysqlPool = null; }
+      if (attempt === MAX_RETRIES) throw new Error(`Impossible de se connecter à MySQL après ${MAX_RETRIES} tentatives`);
+      await sleep(DELAY_MS);
+    }
+  }
+
+  // Création des tables (IF NOT EXISTS = idempotent)
   await mysqlPool.query(`
     CREATE TABLE IF NOT EXISTS beacon_pings (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
