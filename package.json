@@ -1,0 +1,44 @@
+{
+  "name": "testor",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "api": "node server/index.js",
+    "api:mysql": "cross-env DB_PROVIDER=mysql node server/index.js",
+    "dev:full": "concurrently \"npm run api\" \"npm run dev\"",
+    "dev:full:mysql": "concurrently \"npm run api:mysql\" \"npm run dev\"",
+    "sql:up": "docker compose up -d mysql phpmyadmin",
+    "sql:down": "docker compose down",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.563.0",
+    "mysql2": "^3.17.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-leaflet": "^5.0.0",
+    "vue": "^3.5.28",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "cross-env": "^10.1.0",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "vite": "^7.3.1"
+  }
+}
