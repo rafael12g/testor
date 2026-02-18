@@ -217,8 +217,8 @@ export default function OrienteeringApp() {
   }, [user]);
 
   useEffect(() => {
-    if (user?.role !== 'orga') { setRaceHistory([]); return undefined; }
-    const poll = async () => { try { setRaceHistory(await fetchRaceHistory(null, 40)); } catch { setRaceHistory([]); } };
+    if (user?.role !== 'orga' && user?.role !== 'admin') { setRaceHistory([]); return undefined; }
+    const poll = async () => { try { setRaceHistory(await fetchRaceHistory(null, 60)); } catch { setRaceHistory([]); } };
     poll();
     const id = setInterval(poll, 3000);
     return () => clearInterval(id);
@@ -522,8 +522,13 @@ export default function OrienteeringApp() {
   if (!user && view === 'runner_join') return (
     <div className="page">
       <div className="card login-card">
-        <h1 className="title">Rejoindre une course</h1>
-        <p className="muted">Entre le code d'équipe fourni par l'organisateur.</p>
+        <div style={{ marginBottom: '1.25rem' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 48, height: 48, borderRadius: 12, background: 'var(--success-light)', color: 'var(--success)', marginBottom: '1rem' }}>
+            <Navigation size={24} />
+          </div>
+          <h1 className="title">Rejoindre une course</h1>
+          <p className="muted">Entre le code d'équipe fourni par l'organisateur.</p>
+        </div>
         <RunnerJoin onJoin={joinByCode} onBack={() => setView('login')} />
       </div>
     </div>
@@ -532,25 +537,30 @@ export default function OrienteeringApp() {
   if (!user) return (
     <div className="page">
       <div className="card login-card">
-        <h1 className="title">🧭 Orient-Express Sim</h1>
-        <p className="muted">Accès sécurisé pour admin, organisateurs et équipes.</p>
+        <div style={{ marginBottom: '1.5rem' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 52, height: 52, borderRadius: 14, background: 'linear-gradient(135deg, var(--primary), var(--info))', color: '#fff', marginBottom: '1rem', boxShadow: '0 4px 14px rgba(79,70,229,0.25)' }}>
+            <MapPin size={26} />
+          </div>
+          <h1 className="title">Course d'orientation</h1>
+        </div>
         {authError && <div className="alert">{authError}</div>}
         <div className="stack">
           <div className="auth-block">
-            <h3>Connexion Admin</h3>
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><ShieldCheck size={16} style={{ color: 'var(--danger)' }} /> Connexion Admin</h3>
             <input
               type="password"
               value={adminPasswordInput}
               onChange={e => setAdminPasswordInput(e.target.value)}
               placeholder="Mot de passe admin"
               className="input"
+              onKeyDown={e => e.key === 'Enter' && handleAdminLogin()}
             />
-            <button onClick={handleAdminLogin} className="btn btn-danger"><ShieldCheck size={18} /> Se connecter</button>
+            <button onClick={handleAdminLogin} className="btn btn-danger"><ShieldCheck size={16} /> Se connecter</button>
           </div>
           <div className="auth-block">
-            <h3>Connexion Orga</h3>
+            <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Users size={16} style={{ color: 'var(--primary)' }} /> Connexion Orga</h3>
             <select value={orgaLoginId} onChange={e => setOrgaLoginId(e.target.value)} className="input">
-              <option value="">Choisir un compte</option>
+              <option value="">Choisir un compte…</option>
               {orgaAccounts.map(acc => (
                 <option key={acc.id} value={acc.id}>{acc.name}</option>
               ))}
@@ -561,10 +571,13 @@ export default function OrienteeringApp() {
               onChange={e => setOrgaPasswordInput(e.target.value)}
               placeholder="Mot de passe orga"
               className="input"
+              onKeyDown={e => e.key === 'Enter' && handleOrgaLogin()}
             />
-            <button onClick={handleOrgaLogin} className="btn btn-primary"><Users size={18} /> Se connecter</button>
+            <button onClick={handleOrgaLogin} className="btn btn-primary"><Users size={16} /> Se connecter</button>
           </div>
-          <button onClick={() => setView('runner_join')} className="btn btn-success"><Navigation size={18} /> Rejoindre une course</button>
+          <div style={{ paddingTop: '0.25rem' }}>
+            <button onClick={() => setView('runner_join')} className="btn btn-success" style={{ width: '100%' }}><Navigation size={16} /> Rejoindre une course</button>
+          </div>
         </div>
       </div>
     </div>
@@ -573,7 +586,11 @@ export default function OrienteeringApp() {
   return (
     <div className="app">
       <header className="header">
-        <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 8, background: 'linear-gradient(135deg, var(--primary), var(--info))', color: '#fff', flexShrink: 0 }}>
+            <MapPin size={16} />
+          </div>
+          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text)', marginRight: '0.5rem' }}>-</span>
           <span className="badge">{user.role.toUpperCase()}</span>
           <span className="header-title">{user.name}</span>
           {!isOnline && <span className="offline-pill">Hors ligne</span>}
@@ -603,6 +620,7 @@ export default function OrienteeringApp() {
             createOrgaAccount={createOrgaAccount}
             deleteOrgaAccount={deleteOrgaAccount}
             adminLogs={adminLogs}
+            raceHistory={raceHistory}
           />
         )}
         {user.role === 'orga' && (
@@ -677,7 +695,10 @@ function OrgaPanel({
       <section className="card">
         <div className="card-header">
           <div>
-            <h2 className="card-title">Tableau Orga</h2>
+            <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Activity size={20} style={{ color: 'var(--primary)' }} />
+              Tableau Orga
+            </h2>
             <p className="muted">Simulation temps réel des équipes et check-ins.</p>
           </div>
           <div className="actions">
@@ -735,7 +756,7 @@ function OrgaPanel({
         </ul>
 
         <div className="section-divider" />
-        <h3 className="card-title">📜 Historique des courses</h3>
+        <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><LineChart size={18} style={{ color: 'var(--info)' }} /> Historique des courses</h3>
         <p className="muted">Événements enregistrés en BDD : créations, modifications, check-ins…</p>
         <div className="race-history-panel">
           {raceHistory.length === 0 && <p className="muted">Aucun événement enregistré.</p>}
@@ -864,7 +885,7 @@ function OrgaPanel({
   );
 }
 
-function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccounts, createOrgaAccount, deleteOrgaAccount, adminLogs }) {
+function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccounts, createOrgaAccount, deleteOrgaAccount, adminLogs, raceHistory }) {
   const [newOrgaName, setNewOrgaName] = useState('');
   const [newOrgaPassword, setNewOrgaPassword] = useState('');
   const [orgaMessage, setOrgaMessage] = useState('');
@@ -885,7 +906,10 @@ function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccount
     <div className="card">
       <div className="card-header">
         <div>
-          <h2 className="card-title">Console Super-Admin</h2>
+          <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <ShieldCheck size={20} style={{ color: 'var(--danger)' }} />
+            Console Super-Admin
+          </h2>
           <p className="muted">Vue globale de toutes les courses créées par les organisateurs.</p>
         </div>
         <button className="btn btn-danger" onClick={resetAll}>Réinitialiser tout</button>
@@ -959,7 +983,7 @@ function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccount
       <div className="section-divider" />
       <div className="card-header">
         <div>
-          <h3 className="card-title">📋 Logs serveur (BDD)</h3>
+          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Activity size={18} style={{ color: 'var(--primary)' }} /> Logs serveur (BDD)</h3>
           <p className="muted">Logs réels stockés en base de données SQL, mis à jour automatiquement.</p>
         </div>
       </div>
@@ -974,6 +998,30 @@ function AdminPanel({ races, deleteRace, toggleRaceActive, resetAll, orgaAccount
               <span className="log-message">{log.message}</span>
               {log.meta && <span className="log-meta">{typeof log.meta === 'string' ? log.meta : JSON.stringify(log.meta)}</span>}
               <span className="log-time">{new Date(log.ts || log.timestamp).toLocaleTimeString()}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="section-divider" />
+      <div className="card-header">
+        <div>
+          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><LineChart size={18} style={{ color: 'var(--info)' }} /> Historique des courses</h3>
+          <p className="muted">Événements de toutes les courses : créations, modifications, check-ins…</p>
+        </div>
+      </div>
+      <div className="race-history-panel">
+        {raceHistory.length === 0 && <p className="muted">Aucun événement enregistré.</p>}
+        <ul className="history-list">
+          {raceHistory.map((evt, i) => (
+            <li key={evt.id || i} className="history-row">
+              <span className={`history-badge history-badge--${evt.event_type || evt.eventType || 'info'}`}>
+                {evt.event_type || evt.eventType || '?'}
+              </span>
+              <span className="history-msg">
+                {evt.race_id ? `Course #${evt.race_id}` : ''} {evt.payload ? (typeof evt.payload === 'string' ? evt.payload : JSON.stringify(evt.payload)) : ''}
+              </span>
+              <span className="history-time">{new Date(evt.ts || evt.timestamp).toLocaleString()}</span>
             </li>
           ))}
         </ul>
@@ -1083,10 +1131,10 @@ function StatCard({ icon, label, value, sub }) {
   return (
     <div className="stat-card">
       <div className="stat-icon">{icon}</div>
-      <div>
+      <div style={{ minWidth: 0 }}>
         <div className="stat-label">{label}</div>
         <div className="stat-value">{value}</div>
-        <div className="muted">{sub}</div>
+        {sub && <div className="muted" style={{ fontSize: '0.72rem', marginTop: '0.1rem' }}>{sub}</div>}
       </div>
     </div>
   );
@@ -1111,14 +1159,20 @@ function MiniLineChart({ data, color }) {
   const points = data
     .map((value, idx) => {
       const x = (idx / (data.length - 1)) * 100;
-      const y = 100 - ((value - min) / range) * 100;
+      const y = 100 - ((value - min) / range) * 90 - 5;
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(' ');
   return (
     <svg viewBox="0 0 100 100" className="mini-chart" preserveAspectRatio="none">
-      <polyline points={points} fill="none" stroke={color} strokeWidth="3" />
-      <polygon points={`0,100 ${points} 100,100`} fill={color} opacity="0.12" />
+      <defs>
+        <linearGradient id={`grad-${color}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.2" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <polygon points={`0,100 ${points} 100,100`} fill={`url(#grad-${color})`} />
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
