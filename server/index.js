@@ -1,7 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { WebSocketServer } from 'ws';
+import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -21,6 +23,7 @@ import {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
+const ADMIN_HASH = '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9';
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -51,10 +54,28 @@ wss.on('connection', async ws => {
 
 // ─── middleware ───
 
-app.use(cors());
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:5174,http://localhost:3000').split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) cb(null, true);
+    else cb(new Error('Origin non autorisée'));
+  },
+}));
 app.use(express.json());
 
+const apiLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false });
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false, message: { ok: false, error: 'Trop de tentatives' } });
+app.use('/api', apiLimiter);
+
 // ─── routes ───
+
+app.post('/api/auth/admin', authLimiter, (req, res) => {
+  const { password } = req.body || {};
+  if (!password) return res.status(400).json({ ok: false, error: 'Mot de passe requis' });
+  const hash = createHash('sha256').update(String(password)).digest('hex');
+  if (hash !== ADMIN_HASH) return res.status(401).json({ ok: false, error: 'Mot de passe incorrect' });
+  return res.json({ ok: true });
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'backend-sql', dbProvider: getDbProvider(), dbPath: getDbPath(), now: Date.now() });
