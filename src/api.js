@@ -92,16 +92,16 @@ export async function pingBackendHealth() {
   return response.json();
 }
 
-export async function loginAdmin(password) {
+export async function loginAdmin(username, password) {
   try {
     const res = await safeFetch(`${BASE_URL}/auth/admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
     if (!res) return { ok: false, error: 'Backend indisponible' };
     const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.error || 'Échec authentification' };
+    if (!res.ok) return { ok: false, error: data.error || 'Identifiants incorrects' };
     return data;
   } catch { return { ok: false, error: 'Erreur réseau' }; }
 }

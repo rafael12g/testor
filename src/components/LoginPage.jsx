@@ -1,32 +1,21 @@
 import React, { useState } from 'react';
-import { Navigation, MapPin, ShieldCheck, Users } from 'lucide-react';
-import { loginAdmin } from '../sim/fakeBackendApi';
-import { hashPassword } from '../utils/helpers';
+import { Navigation, MapPin, ShieldCheck } from 'lucide-react';
+import { loginAdmin } from '../api';
 
-export default function LoginPage({ orgaAccounts, onLogin, onRunnerJoin }) {
+export default function LoginPage({ onLogin, onRunnerJoin }) {
   const [view, setView] = useState('main');
+  const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
-  const [orgaLoginId, setOrgaLoginId] = useState('');
-  const [orgaPassword, setOrgaPassword] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState('');
 
   const handleAdminLogin = async () => {
     setError('');
-    const result = await loginAdmin(adminPassword);
-    if (!result.ok) { setError(result.error || 'Mot de passe admin incorrect.'); return; }
+    const result = await loginAdmin(adminUsername, adminPassword);
+    if (!result.ok) { setError(result.error || 'Identifiants incorrects.'); return; }
+    setAdminUsername('');
     setAdminPassword('');
-    onLogin({ role: 'admin', name: 'Admin' });
-  };
-
-  const handleOrgaLogin = async () => {
-    setError('');
-    const account = orgaAccounts.find(acc => String(acc.id) === String(orgaLoginId));
-    if (!account) { setError('Compte orga introuvable.'); return; }
-    const hash = await hashPassword(orgaPassword);
-    if (hash !== account.passwordHash) { setError('Mot de passe orga incorrect.'); return; }
-    setOrgaPassword('');
-    onLogin({ role: 'orga', name: account.name });
+    onLogin({ role: 'admin', name: 'Admin', permissions: result.permissions || {} });
   };
 
   if (view === 'runner_join') return (
@@ -61,17 +50,9 @@ export default function LoginPage({ orgaAccounts, onLogin, onRunnerJoin }) {
         <div className="stack">
           <div className="auth-block">
             <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><ShieldCheck size={16} style={{ color: 'var(--danger)' }} /> Connexion Admin</h3>
-            <input type="password" value={adminPassword} onChange={e => setAdminPassword(e.target.value)} placeholder="Mot de passe admin" className="input" onKeyDown={e => e.key === 'Enter' && handleAdminLogin()} />
+            <input type="text" value={adminUsername} onChange={e => setAdminUsername(e.target.value)} placeholder="Nom d'utilisateur" className="input" />
+            <input type="password" value={adminPassword} onChange={e => setAdminPassword(e.target.value)} placeholder="Mot de passe" className="input" onKeyDown={e => e.key === 'Enter' && handleAdminLogin()} />
             <button onClick={handleAdminLogin} className="btn btn-danger"><ShieldCheck size={16} /> Se connecter</button>
-          </div>
-          <div className="auth-block">
-            <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Users size={16} style={{ color: 'var(--primary)' }} /> Connexion Orga</h3>
-            <select value={orgaLoginId} onChange={e => setOrgaLoginId(e.target.value)} className="input">
-              <option value="">Choisir un compte…</option>
-              {orgaAccounts.map(acc => (<option key={acc.id} value={acc.id}>{acc.name}</option>))}
-            </select>
-            <input type="password" value={orgaPassword} onChange={e => setOrgaPassword(e.target.value)} placeholder="Mot de passe orga" className="input" onKeyDown={e => e.key === 'Enter' && handleOrgaLogin()} />
-            <button onClick={handleOrgaLogin} className="btn btn-primary"><Users size={16} /> Se connecter</button>
           </div>
           <div style={{ paddingTop: '0.25rem' }}>
             <button onClick={() => setView('runner_join')} className="btn btn-success" style={{ width: '100%' }}><Navigation size={16} /> Rejoindre une course</button>

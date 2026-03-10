@@ -1,19 +1,21 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
-import { createHash } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   getBeaconSnapshotByRace,
-  getDbProvider,
-  getDbPath,
   getRecentBeaconEvents,
   getServerLogs,
   getRaceHistory,
-  initDb,
+  initApi,
+  isApiAvailable,
+  getCoursesApi,
+  getTeamByCodeApi,
+  loginViaApi,
   insertBeaconPing,
   insertServerLog,
   insertRaceEvent,
@@ -23,7 +25,6 @@ import {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
-const ADMIN_HASH = '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9';
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -54,11 +55,11 @@ wss.on('connection', async ws => {
 
 // ─── middleware ───
 
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:5174,http://localhost:3000').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
   origin(origin, cb) {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) cb(null, true);
-    else cb(new Error('Origin non autorisée'));
+    if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(null, false);
   },
 }));
 app.use(express.json());
@@ -69,16 +70,20 @@ app.use('/api', apiLimiter);
 
 // ─── routes ───
 
-app.post('/api/auth/admin', authLimiter, (req, res) => {
-  const { password } = req.body || {};
-  if (!password) return res.status(400).json({ ok: false, error: 'Mot de passe requis' });
-  const hash = createHash('sha256').update(String(password)).digest('hex');
-  if (hash !== ADMIN_HASH) return res.status(401).json({ ok: false, error: 'Mot de passe incorrect' });
-  return res.json({ ok: true });
+app.post('/api/auth/admin', authLimiter, async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  try {
+    const result = await loginViaApi(username, password);
+    if (!result.ok) return res.status(401).json({ ok: false, error: result.error || 'Identifiants incorrects' });
+    return res.json({ ok: true, permissions: result.permissions || null });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur de connexion à l\'API' });
+  }
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'backend-sql', dbProvider: getDbProvider(), dbPath: getDbPath(), now: Date.now() });
+  res.json({ ok: true, service: 'testor-api', apiConnected: isApiAvailable(), now: Date.now() });
 });
 
 // --- Logs (vrais logs stockés en BDD) ---
@@ -177,6 +182,33 @@ app.get('/api/history', async (req, res) => {
   res.json({ ok: true, items, count: items.length });
 });
 
+// --- Courses (lecture seule depuis PostgreSQL) ---
+
+app.get('/api/courses', async (_req, res) => {
+  if (!isApiAvailable()) return res.json({ ok: true, items: [], count: 0 });
+  try {
+    const items = await getCoursesApi();
+    res.json({ ok: true, items, count: items.length });
+  } catch (err) {
+    await log('error', 'Erreur lecture courses API', { error: String(err?.message || err) });
+    res.status(500).json({ ok: false, error: 'Erreur lecture API externe' });
+  }
+});
+
+app.get('/api/teams/code/:code', async (req, res) => {
+  const code = String(req.params.code || '').trim().toUpperCase();
+  if (!code) return res.status(400).json({ ok: false, error: 'Code requis' });
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée' });
+  try {
+    const result = await getTeamByCodeApi(code);
+    if (!result) return res.status(404).json({ ok: false, error: 'Code introuvable ou course inactive' });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    await log('error', 'Erreur recherche équipe API', { error: String(err?.message || err) });
+    res.status(500).json({ ok: false, error: 'Erreur lecture API externe' });
+  }
+});
+
 // ─── serve frontend (production / Docker) ───
 
 const __dirname2 = path.dirname(fileURLToPath(import.meta.url));
@@ -192,18 +224,16 @@ app.get('/{*path}', (_req, res) => {
 
 // ─── start ───
 
-initDb()
-  .then(async () => {
-    await log('info', `Backend démarré (${getDbProvider()})`, { dbPath: getDbPath() });
-    await pruneServerLogs(1000);
-    httpServer.listen(PORT, () => {
-      console.log(`Backend SQL prêt → http://localhost:${PORT}  (${getDbProvider()})`);
-      console.log(`WebSocket        → ws://localhost:${PORT}/ws`);
-      console.log(`Logs API         → http://localhost:${PORT}/api/logs`);
-      console.log(`Historique       → http://localhost:${PORT}/api/history`);
-    });
-  })
-  .catch(err => {
-    console.error('ERREUR init DB:', err);
-    process.exit(1);
+(async () => {
+  try { await initApi(); } catch (err) { console.warn('API externe non disponible:', err.message); }
+  await log('info', 'Backend démarré (mémoire + API externe)');
+  httpServer.listen(PORT, () => {
+    console.log(`Backend prêt      → http://localhost:${PORT}`);
+    console.log(`API externe       → ${process.env.API_URL ? '✅ ' + process.env.API_URL : '❌ non configurée (API_URL vide)'}`);
+    console.log(`Clé API           → ${process.env.API_KEY ? '✅ configurée' : '❌ manquante'}`);
+    console.log(`WebSocket         → ws://localhost:${PORT}/ws`);
   });
+})().catch(err => {
+  console.error('ERREUR démarrage:', err);
+  process.exit(1);
+});

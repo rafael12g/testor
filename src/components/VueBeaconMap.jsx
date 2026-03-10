@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { createApp, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { fetchBeaconSnapshot } from '../sim/fakeBackendApi';
+import { fetchBeaconSnapshot } from '../api';
 
 const VueMapRoot = defineComponent({
   name: 'VueMapRoot',

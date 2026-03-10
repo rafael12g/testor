@@ -19,9 +19,6 @@ RUN npm ci --omit=dev
 COPY server/ ./server/
 COPY --from=builder /app/dist ./dist
 
-# Persist SQLite DB outside the container via volume
-RUN mkdir -p /app/server/data
-
 ENV NODE_ENV=production
 ENV PORT=8787
 EXPOSE 8787

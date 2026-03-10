@@ -1,275 +1,329 @@
-import initSqlJs from 'sql.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+// ─── Stockage en mémoire (logs, pings, events) ───────────────
+// Pas de BDD locale — tout passe par l'API externe pour les courses.
+// Les logs / pings / events sont éphémères et stockés en RAM.
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const provider = (process.env.DB_PROVIDER || 'sqlite').toLowerCase();
+const MAX_PINGS = 5000;
+const MAX_LOGS = 1000;
+const MAX_EVENTS = 500;
 
-let mysqlPool = null;
-let sqlitePath = null;
-let db = null;
+let pings = [];
+let logs = [];
+let events = [];
+let idCounter = 1;
 
-// ─── helpers ───
+function nextId() { return idCounter++; }
 
-function mapBeaconRow(row) {
-  return {
-    id: row.id,
-    race_id: row.race_id,
-    team_code: row.team_code,
-    team_name: row.team_name,
-    lat: Number(row.lat),
-    lng: Number(row.lng),
-    accuracy: Number(row.accuracy),
-    speed_kmh: Number(row.speed_kmh),
-    heading: Number(row.heading),
-    battery: Number(row.battery),
-    created_at: Number(row.created_at),
-  };
-}
-
-function mapLogRow(row) {
-  return {
-    id: row.id,
-    level: row.level,
-    message: row.message,
-    meta: row.meta ? tryJson(row.meta) : null,
-    timestamp: Number(row.timestamp),
-  };
-}
-
-function mapEventRow(row) {
-  return {
-    id: row.id,
-    race_id: row.race_id,
-    event_type: row.event_type,
-    payload: row.payload ? tryJson(row.payload) : null,
-    created_at: Number(row.created_at),
-  };
-}
-
-function tryJson(s) {
-  try { return JSON.parse(s); } catch { return s; }
-}
-
-function sqliteAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
-}
-
-function sqliteRun(sql, params = []) {
-  db.run(sql, params);
-}
-
-function persist() {
-  if (!db || !sqlitePath) return;
-  const data = db.export();
-  fs.writeFileSync(sqlitePath, Buffer.from(data));
-}
-
-// ─── init ───
-
-const SQLITE_SCHEMA = `
-  CREATE TABLE IF NOT EXISTS beacon_pings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    race_id TEXT NOT NULL,
-    team_code TEXT NOT NULL,
-    team_name TEXT NOT NULL,
-    lat REAL NOT NULL,
-    lng REAL NOT NULL,
-    accuracy REAL NOT NULL,
-    speed_kmh REAL NOT NULL,
-    heading REAL NOT NULL,
-    battery REAL NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS server_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    level TEXT NOT NULL DEFAULT 'info',
-    message TEXT NOT NULL,
-    meta TEXT,
-    timestamp INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS race_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    race_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    payload TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_bp_race ON beacon_pings(race_id, created_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_bp_team ON beacon_pings(team_code, created_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_logs_ts ON server_logs(timestamp DESC);
-  CREATE INDEX IF NOT EXISTS idx_re_race ON race_events(race_id, created_at DESC);
-`;
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function initMySql() {
-  const mysql = await import('mysql2/promise');
-  const cfg = {
-    host: process.env.DB_HOST || '127.0.0.1',
-    port: Number(process.env.DB_PORT || 3306),
-    user: process.env.DB_USER || 'orienteering',
-    password: process.env.DB_PASSWORD || 'orienteering',
-    database: process.env.DB_NAME || 'orienteering',
-    waitForConnections: true,
-    connectionLimit: 10,
-  };
-
-  // Retry loop — MySQL peut mettre 10-30s à démarrer dans Docker
-  const MAX_RETRIES = 20;
-  const DELAY_MS = 3000;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      mysqlPool = mysql.default.createPool(cfg);
-      // Test de connexion réel
-      const conn = await mysqlPool.getConnection();
-      conn.release();
-      console.log(`MySQL connecté (tentative ${attempt})`);
-      break;
-    } catch (err) {
-      console.log(`MySQL pas prêt (tentative ${attempt}/${MAX_RETRIES}) — ${err.code || err.message}`);
-      if (mysqlPool) { try { await mysqlPool.end(); } catch {} mysqlPool = null; }
-      if (attempt === MAX_RETRIES) throw new Error(`Impossible de se connecter à MySQL après ${MAX_RETRIES} tentatives`);
-      await sleep(DELAY_MS);
-    }
-  }
-
-  // Création des tables (IF NOT EXISTS = idempotent)
-  await mysqlPool.query(`
-    CREATE TABLE IF NOT EXISTS beacon_pings (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      race_id VARCHAR(80) NOT NULL, team_code VARCHAR(80) NOT NULL, team_name VARCHAR(120) NOT NULL,
-      lat DOUBLE NOT NULL, lng DOUBLE NOT NULL, accuracy DOUBLE NOT NULL,
-      speed_kmh DOUBLE NOT NULL, heading DOUBLE NOT NULL, battery DOUBLE NOT NULL,
-      created_at BIGINT NOT NULL,
-      INDEX idx_bp_race (race_id, created_at DESC), INDEX idx_bp_team (team_code, created_at DESC)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
-  await mysqlPool.query(`
-    CREATE TABLE IF NOT EXISTS server_logs (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      level VARCHAR(20) NOT NULL DEFAULT 'info', message VARCHAR(500) NOT NULL,
-      meta TEXT, timestamp BIGINT NOT NULL,
-      INDEX idx_logs_ts (timestamp DESC)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
-  await mysqlPool.query(`
-    CREATE TABLE IF NOT EXISTS race_events (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      race_id VARCHAR(80) NOT NULL, event_type VARCHAR(80) NOT NULL,
-      payload TEXT, created_at BIGINT NOT NULL,
-      INDEX idx_re_race (race_id, created_at DESC)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
-}
-
-async function initSqliteDb() {
-  const dataDir = path.resolve(__dirname, 'data');
-  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-  sqlitePath = path.join(dataDir, 'sim.db');
-
-  const SQL = await initSqlJs();
-  if (fs.existsSync(sqlitePath)) {
-    db = new SQL.Database(fs.readFileSync(sqlitePath));
-  } else {
-    db = new SQL.Database();
-  }
-  db.run(SQLITE_SCHEMA);
-  persist();
-}
-
-export async function initDb() {
-  if (provider === 'mysql') await initMySql();
-  else await initSqliteDb();
-}
-
-// ─── beacon_pings ───
+// ─── beacon_pings (en mémoire) ───
 
 export async function insertBeaconPing(p) {
-  const sql = `INSERT INTO beacon_pings (race_id,team_code,team_name,lat,lng,accuracy,speed_kmh,heading,battery,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`;
-  const v = [p.raceId, p.teamCode, p.teamName, p.lat, p.lng, p.accuracy, p.speedKmh, p.heading, p.battery, p.createdAt];
-  if (provider === 'mysql') { await mysqlPool.query(sql, v); return; }
-  sqliteRun(sql, v); persist();
+  const entry = {
+    id: nextId(),
+    race_id: p.raceId,
+    team_code: p.teamCode,
+    team_name: p.teamName,
+    lat: Number(p.lat),
+    lng: Number(p.lng),
+    accuracy: Number(p.accuracy),
+    speed_kmh: Number(p.speedKmh),
+    heading: Number(p.heading),
+    battery: Number(p.battery),
+    created_at: p.createdAt || Date.now(),
+  };
+  pings.push(entry);
+  return entry;
 }
 
 export async function getBeaconSnapshotByRace(raceId) {
   const id = String(raceId);
-  const sql = `SELECT p.* FROM beacon_pings p INNER JOIN (SELECT team_code, MAX(created_at) AS mc FROM beacon_pings WHERE race_id=? GROUP BY team_code) t ON t.team_code=p.team_code AND t.mc=p.created_at WHERE p.race_id=? ORDER BY p.created_at DESC`;
-  if (provider === 'mysql') { const [r] = await mysqlPool.query(sql, [id, id]); return r.map(mapBeaconRow); }
-  return sqliteAll(sql, [id, id]).map(mapBeaconRow);
+  const byTeam = new Map();
+  for (const p of pings) {
+    if (p.race_id !== id) continue;
+    const prev = byTeam.get(p.team_code);
+    if (!prev || p.created_at > prev.created_at) byTeam.set(p.team_code, p);
+  }
+  return [...byTeam.values()].sort((a, b) => b.created_at - a.created_at);
 }
 
 export async function getRecentBeaconEvents(limit = 25) {
   const n = Math.max(1, Number(limit) || 25);
-  const sql = `SELECT * FROM beacon_pings ORDER BY created_at DESC LIMIT ?`;
-  if (provider === 'mysql') { const [r] = await mysqlPool.query(sql, [n]); return r.map(mapBeaconRow); }
-  return sqliteAll(sql, [n]).map(mapBeaconRow);
+  return pings.slice(-n).reverse();
 }
 
-export async function pruneBeacons(max = 4000) {
-  const n = Math.max(100, Number(max) || 4000);
-  if (provider === 'mysql') { await mysqlPool.query(`DELETE FROM beacon_pings WHERE id NOT IN (SELECT k.id FROM (SELECT id FROM beacon_pings ORDER BY created_at DESC LIMIT ?) AS k)`, [n]); return; }
-  sqliteRun(`DELETE FROM beacon_pings WHERE id NOT IN (SELECT id FROM beacon_pings ORDER BY created_at DESC LIMIT ?)`, [n]); persist();
+export async function pruneBeacons(max = MAX_PINGS) {
+  if (pings.length > max) pings = pings.slice(-max);
 }
 
-// ─── server_logs (vrais logs stockés en BDD) ───
+// ─── server_logs (en mémoire) ───
 
 export async function insertServerLog(level, message, meta = null) {
-  const ts = Date.now();
-  const mj = meta ? JSON.stringify(meta) : null;
-  const sql = `INSERT INTO server_logs (level,message,meta,timestamp) VALUES (?,?,?,?)`;
-  if (provider === 'mysql') { await mysqlPool.query(sql, [level, message, mj, ts]); }
-  else { sqliteRun(sql, [level, message, mj, ts]); persist(); }
-  return { id: ts, level, message, meta, timestamp: ts };
+  const entry = { id: nextId(), level, message, meta, timestamp: Date.now() };
+  logs.push(entry);
+  return entry;
 }
 
 export async function getServerLogs(limit = 80) {
   const n = Math.max(1, Number(limit) || 80);
-  const sql = `SELECT * FROM server_logs ORDER BY timestamp DESC LIMIT ?`;
-  if (provider === 'mysql') { const [r] = await mysqlPool.query(sql, [n]); return r.map(mapLogRow); }
-  return sqliteAll(sql, [n]).map(mapLogRow);
+  return logs.slice(-n).reverse();
 }
 
-export async function pruneServerLogs(max = 1000) {
-  const n = Math.max(50, Number(max) || 1000);
-  if (provider === 'mysql') { await mysqlPool.query(`DELETE FROM server_logs WHERE id NOT IN (SELECT k.id FROM (SELECT id FROM server_logs ORDER BY timestamp DESC LIMIT ?) AS k)`, [n]); return; }
-  sqliteRun(`DELETE FROM server_logs WHERE id NOT IN (SELECT id FROM server_logs ORDER BY timestamp DESC LIMIT ?)`, [n]); persist();
+export async function pruneServerLogs(max = MAX_LOGS) {
+  if (logs.length > max) logs = logs.slice(-max);
 }
 
-// ─── race_events (historique des courses) ───
+// ─── race_events (en mémoire) ───
 
 export async function insertRaceEvent(raceId, eventType, payload = null) {
-  const ts = Date.now();
-  const pj = payload ? JSON.stringify(payload) : null;
-  const sql = `INSERT INTO race_events (race_id,event_type,payload,created_at) VALUES (?,?,?,?)`;
-  if (provider === 'mysql') { await mysqlPool.query(sql, [String(raceId), eventType, pj, ts]); }
-  else { sqliteRun(sql, [String(raceId), eventType, pj, ts]); persist(); }
-  return { id: ts, race_id: String(raceId), event_type: eventType, payload, created_at: ts };
+  const entry = { id: nextId(), race_id: String(raceId), event_type: eventType, payload, created_at: Date.now() };
+  events.push(entry);
+  return entry;
 }
 
 export async function getRaceHistory(raceId, limit = 50) {
   const n = Math.max(1, Number(limit) || 50);
-  if (raceId) {
-    const sql = `SELECT * FROM race_events WHERE race_id=? ORDER BY created_at DESC LIMIT ?`;
-    if (provider === 'mysql') { const [r] = await mysqlPool.query(sql, [String(raceId), n]); return r.map(mapEventRow); }
-    return sqliteAll(sql, [String(raceId), n]).map(mapEventRow);
+  const filtered = raceId ? events.filter(e => e.race_id === String(raceId)) : events;
+  return filtered.slice(-n).reverse();
+}
+
+// ─── API externe (lecture courses — JWT auth) ───
+
+let apiUrl = null;
+
+export async function initApi() {
+  const url = (process.env.API_URL || '').trim();
+  if (!url) {
+    console.log('API_URL non défini — lecture API externe désactivée');
+    return;
   }
-  const sql = `SELECT * FROM race_events ORDER BY created_at DESC LIMIT ?`;
-  if (provider === 'mysql') { const [r] = await mysqlPool.query(sql, [n]); return r.map(mapEventRow); }
-  return sqliteAll(sql, [n]).map(mapEventRow);
+  apiUrl = url.replace(/\/+$/, '');
+  // Vérifier la connexion avec la clé API
+  try {
+    const res = await fetch(`${apiUrl}/api/courses`, {
+      headers: { 'Authorization': `ApiKey ${process.env.API_KEY || ''}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      console.log(`API externe configurée → ${apiUrl} ✅ (clé API valide)`);
+    } else {
+      console.warn(`API externe configurée → ${apiUrl} ⚠️ (réponse ${res.status})`);
+    }
+  } catch (err) {
+    console.warn(`API externe configurée → ${apiUrl} ⚠️ (${err.message})`);
+  }
 }
 
-// ─── meta ───
+export function isApiAvailable() { return !!apiUrl && !!process.env.API_KEY; }
 
-export function getDbPath() {
-  if (provider === 'mysql') return `mysql://${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}/${process.env.DB_NAME || 'orienteering'}`;
-  return sqlitePath;
+export async function apiFetch(endpoint, options = {}) {
+  if (!apiUrl) throw new Error('API non configurée (API_URL manquant)');
+  if (!process.env.API_KEY) throw new Error('API_KEY manquante');
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `ApiKey ${process.env.API_KEY}`,
+    ...options.headers,
+  };
+
+  const res = await fetch(`${apiUrl}${endpoint}`, { ...options, headers, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  return res.json();
 }
 
-export function getDbProvider() { return provider; }
+// ─── Courses ───
+
+export async function getCoursesApi() {
+  if (!isApiAvailable()) return [];
+  const data = await apiFetch('/api/courses');
+  const courses = Array.isArray(data) ? data : (data.data || data.value || data.courses || []);
+  if (!Array.isArray(courses)) return [];
+  const result = [];
+
+  // Charger toutes les équipes et balises en une fois
+  let allEquipes = [];
+  try {
+    const eData = await apiFetch('/api/equipes');
+    allEquipes = Array.isArray(eData) ? eData : (eData.data || eData.value || []);
+  } catch {}
+
+  let allBalises = [];
+  try {
+    const bData = await apiFetch('/api/balises');
+    allBalises = Array.isArray(bData) ? bData : (bData.data || bData.value || []);
+  } catch {}
+
+  for (const course of courses) {
+    // Récupérer les balises ordonnées pour cette course
+    let ordreBalises = [];
+    try {
+      const obData = await apiFetch(`/api/ordre-balises/course/${course.id}`);
+      ordreBalises = Array.isArray(obData) ? obData : (obData.data || obData.value || []);
+    } catch {}
+
+    // Extraire les checkpoints depuis l'ordre des balises ou les balises globales
+    const checkpoints = [];
+    for (const ob of ordreBalises) {
+      if (ob.balise && ob.balise.latitude != null) {
+        checkpoints.push({ lat: Number(ob.balise.latitude), lng: Number(ob.balise.longitude) });
+      } else if (ob.latitude != null) {
+        checkpoints.push({ lat: Number(ob.latitude), lng: Number(ob.longitude) });
+      } else {
+        const bId = ob.id_balise || ob.balise_id;
+        const found = allBalises.find(b => b.id === bId);
+        if (found) checkpoints.push({ lat: Number(found.latitude), lng: Number(found.longitude) });
+      }
+    }
+
+    // Équipes liées à cette course
+    const equipes = allEquipes.filter(eq =>
+      eq.id_course_actuelle === course.id || eq.course_id === course.id || eq.id_course === course.id
+    );
+
+    const startLat = checkpoints[0]?.lat ?? 44.837789;
+    const startLng = checkpoints[0]?.lng ?? -0.57918;
+
+    result.push({
+      id: course.id,
+      name: course.nom_course || course.nom || course.name || `Course ${course.id}`,
+      start: { lat: Number(startLat), lng: Number(startLng) },
+      isActive: course.est_demarree === true && course.est_terminee === false,
+      checkpoints,
+      teams: equipes.map(eq => ({
+        name: eq.nom_equipe || eq.nom || eq.name || `Équipe ${eq.id}`,
+        code: eq.badge_tag || String(eq.id),
+        order: checkpoints,
+      })),
+    });
+  }
+  return result;
+}
+
+// ─── Rejoindre par code ───
+
+export async function getTeamByCodeApi(code) {
+  if (!isApiAvailable()) return null;
+  const normalizedCode = String(code || '').trim().toUpperCase();
+  if (!normalizedCode) return null;
+
+  // Chercher le code dans /api/codes (champs: id_code, nomcode, valeur_code, id_course, id_equipe, nom_course, nom_equipe)
+  let codeEntry = null;
+  try {
+    const codesData = await apiFetch('/api/codes');
+    const codes = Array.isArray(codesData) ? codesData : (codesData.data || codesData.value || []);
+    // Si l'API renvoie un objet unique au lieu d'un tableau
+    const codeList = Array.isArray(codes) ? codes : [codesData];
+
+    codeEntry = codeList.find(c => {
+      const candidates = [
+        c?.nomcode,
+        c?.valeur_code,
+        c?.code,
+        c?.nom_code,
+      ].map(v => String(v || '').trim().toUpperCase()).filter(Boolean);
+      return candidates.includes(normalizedCode);
+    });
+
+    if (!codeEntry) {
+      console.warn(`Code "${normalizedCode}" introuvable. Codes disponibles:`,
+        codeList.map(c => c?.nomcode || c?.valeur_code || c?.code || '(vide)'));
+      return null;
+    }
+    console.log(`Code trouvé: ${normalizedCode} → équipe "${codeEntry.nom_equipe}" (course: "${codeEntry.nom_course}")`);
+  } catch (err) {
+    console.warn(`Erreur lecture /api/codes: ${err.message}`);
+    return null;
+  }
+
+  // On a directement id_course et id_equipe dans le code
+  const courseId = codeEntry.id_course;
+  const equipeId = codeEntry.id_equipe;
+
+  if (!courseId) {
+    console.warn('Code trouvé mais pas de course associée');
+    return null;
+  }
+
+  // Récupérer les détails de la course
+  let course = null;
+  try {
+    const cData = await apiFetch('/api/courses');
+    const courses = Array.isArray(cData) ? cData : (cData.data || cData.value || []);
+    const courseList = Array.isArray(courses) ? courses : [cData];
+    course = courseList.find(c => c.id === courseId);
+  } catch {}
+  if (!course) {
+    console.warn(`Course ${courseId} introuvable`);
+    return null;
+  }
+
+  // Récupérer les balises ordonnées + toutes les balises
+  let checkpoints = [];
+  try {
+    const obData = await apiFetch(`/api/ordre-balises/course/${course.id}`);
+    const ordreBalises = Array.isArray(obData) ? obData : (obData.data || obData.value || []);
+    const obList = Array.isArray(ordreBalises) ? ordreBalises : [];
+
+    let allBalises = [];
+    try {
+      const bData = await apiFetch('/api/balises');
+      allBalises = Array.isArray(bData) ? bData : (bData.data || bData.value || []);
+      if (!Array.isArray(allBalises)) allBalises = [];
+    } catch {}
+
+    for (const ob of obList) {
+      if (ob.balise && ob.balise.latitude != null) {
+        checkpoints.push({ lat: Number(ob.balise.latitude), lng: Number(ob.balise.longitude) });
+      } else if (ob.latitude != null) {
+        checkpoints.push({ lat: Number(ob.latitude), lng: Number(ob.longitude) });
+      } else {
+        const bId = ob.id_balise || ob.balise_id;
+        const found = allBalises.find(b => b.id === bId);
+        if (found) checkpoints.push({ lat: Number(found.latitude), lng: Number(found.longitude) });
+      }
+    }
+  } catch {}
+
+  const startLat = checkpoints[0]?.lat ?? 44.837789;
+  const startLng = checkpoints[0]?.lng ?? -0.57918;
+
+  return {
+    team: {
+      name: codeEntry.nom_equipe || `Équipe ${equipeId}`,
+      code: normalizedCode,
+    },
+    course: {
+      id: course.id,
+      name: codeEntry.nom_course || course.nom_course || course.nom || `Course ${course.id}`,
+      start: { lat: Number(startLat), lng: Number(startLng) },
+      checkpoints,
+    },
+  };
+}
+
+// ─── Login admin via l'API externe ───
+
+export async function loginViaApi(username, password) {
+  if (!apiUrl) return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
+
+    const res = await fetch(`${apiUrl}/api/auth/login`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username, password }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      console.warn(`Login échoué: ${res.status} — ${errData.error || res.statusText}`);
+      return { ok: false, error: errData.error || 'Identifiants incorrects' };
+    }
+
+    const data = await res.json();
+    console.log(`Admin connecté via API → ${username} ✅`);
+    return { ok: true, permissions: data.permissions || data.role || { admin: true } };
+  } catch (err) {
+    console.warn(`Échec login admin: ${err.message}`);
+    return { ok: false, error: 'Erreur de connexion à l\'API' };
+  }
+}
