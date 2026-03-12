@@ -8,3 +8,35 @@ services:
     ports:
       - "80:8787"
     env_file: .env.docker
+
+    # ── Healthcheck — vérifie que le serveur répond ─────────────
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8787/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # ── Limites de ressources ───────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+          cpus: "0.25"
+
+    # ── Logs — évite que les logs explosent le disque ────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # ── Sécurité — limite les privilèges du conteneur ───────────
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
