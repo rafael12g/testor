@@ -1,11 +1,30 @@
-import React from 'react';
-import { ShieldCheck, Activity, LineChart } from 'lucide-react';
+import React, { useState } from 'react';
+import { ShieldCheck, Activity, LineChart, UserPlus } from 'lucide-react';
+import { registerOrga } from '../api';
 
 export default function AdminPanel({ races, adminLogs, raceHistory, permissions = {} }) {
   const canSeeCourses = permissions.acces_courses_lecture !== false;
   const canSeeBalises = permissions.acces_balises_lecture !== false;
   const canSeeEquipes = permissions.acces_equipes_lecture !== false;
   const canSeeEtatCourse = permissions.acces_etat_course_lecture !== false;
+
+  const [orgaUsername, setOrgaUsername] = useState('');
+  const [orgaPassword, setOrgaPassword] = useState('');
+  const [orgaConfirm, setOrgaConfirm] = useState('');
+  const [orgaError, setOrgaError] = useState('');
+  const [orgaSuccess, setOrgaSuccess] = useState('');
+
+  const handleCreateOrga = async () => {
+    setOrgaError(''); setOrgaSuccess('');
+    if (!orgaUsername || !orgaPassword) { setOrgaError('Tous les champs sont requis.'); return; }
+    if (orgaPassword !== orgaConfirm) { setOrgaError('Les mots de passe ne correspondent pas.'); return; }
+    if (orgaUsername.length < 3 || orgaUsername.length > 30) { setOrgaError('Nom d\'utilisateur entre 3 et 30 caractères.'); return; }
+    if (orgaPassword.length < 4) { setOrgaError('Mot de passe trop court (4 caractères min).'); return; }
+    const result = await registerOrga(orgaUsername, orgaPassword);
+    if (!result.ok) { setOrgaError(result.error || 'Erreur lors de la création.'); return; }
+    setOrgaSuccess(`Compte organisateur "${orgaUsername}" créé avec succès !`);
+    setOrgaUsername(''); setOrgaPassword(''); setOrgaConfirm('');
+  };
 
   return (
     <div className="card">
@@ -33,6 +52,24 @@ export default function AdminPanel({ races, adminLogs, raceHistory, permissions 
           ))}
         </tbody>
       </table>
+
+      <div className="section-divider" />
+      <div className="card-header">
+        <div>
+          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><UserPlus size={18} style={{ color: 'var(--info)' }} /> Créer un compte Organisateur</h3>
+          <p className="muted">Limité à 3 créations par heure.</p>
+        </div>
+      </div>
+      <div style={{ maxWidth: 400, marginTop: '0.5rem' }}>
+        {orgaError && <div className="alert" style={{ marginBottom: '0.5rem' }}>{orgaError}</div>}
+        {orgaSuccess && <div className="alert alert-success" style={{ marginBottom: '0.5rem' }}>{orgaSuccess}</div>}
+        <div className="stack">
+          <input type="text" value={orgaUsername} onChange={e => setOrgaUsername(e.target.value)} placeholder="Nom d'utilisateur (3-30 car.)" className="input" />
+          <input type="password" value={orgaPassword} onChange={e => setOrgaPassword(e.target.value)} placeholder="Mot de passe (4 car. min)" className="input" />
+          <input type="password" value={orgaConfirm} onChange={e => setOrgaConfirm(e.target.value)} placeholder="Confirmer le mot de passe" className="input" onKeyDown={e => e.key === 'Enter' && handleCreateOrga()} />
+          <button onClick={handleCreateOrga} className="btn btn-info"><UserPlus size={16} /> Créer le compte</button>
+        </div>
+      </div>
 
       <div className="section-divider" />
       <div className="card-header">

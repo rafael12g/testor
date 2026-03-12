@@ -4,6 +4,7 @@ import { MapPin, LogIn } from 'lucide-react';
 import LoginPage from './components/LoginPage';
 import AdminPanel from './components/AdminPanel';
 import RunnerPanel from './components/RunnerPanel';
+import OrgaPanel from './components/OrgaPanel';
 import { DEFAULT_START, clamp, normalizeCode } from './utils/helpers';
 import { fetchServerLogs, fetchRaceHistory } from './api';
 
@@ -106,6 +107,9 @@ export default function OrienteeringApp() {
       <main className="content">
         {user.role === 'admin' && (
           <AdminPanel races={races} adminLogs={adminLogs} raceHistory={raceHistory} permissions={user.permissions || {}} />
+        )}
+        {user.role === 'orga' && (
+          <OrgaPanel races={races} />
         )}
         {user.role === 'runner' && (
           <RunnerPanel

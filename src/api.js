@@ -105,3 +105,148 @@ export async function loginAdmin(username, password) {
     return data;
   } catch { return { ok: false, error: 'Erreur réseau' }; }
 }
+
+// ─── Organisateur ───
+
+export async function registerOrga(username, password) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error || 'Erreur inscription' };
+    return data;
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
+export async function loginOrga(username, password) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error || 'Identifiants incorrects' };
+    return data;
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
+export async function fetchOrgaRegisterInfo() {
+  try {
+    const res = await safeFetch(`${BASE_URL}/auth/register-info`, {}, { fallback: null });
+    if (!res || !res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function startRace(raceId) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false, error: 'Erreur démarrage course' };
+    return res.json();
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
+export async function pauseRace(raceId) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/pause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function resumeRace(raceId) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function stopRace(raceId) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function pauseTeam(raceId, teamCode) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/pause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function resumeTeam(raceId, teamCode) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function stopTeam(raceId, teamCode) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function fetchRaceChrono(raceId) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/chrono`, {}, { fallback: null });
+    if (!res || !res.ok) return null;
+    const data = await res.json();
+    return data.chrono || null;
+  } catch { return null; }
+}
+
+export async function recordCheckpoint(raceId, teamCode, checkpointIndex) {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/checkpoint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ checkpointIndex }),
+    });
+    if (!res || !res.ok) return { ok: false };
+    return res.json();
+  } catch { return { ok: false }; }
+}
+
+export async function fetchAllChronos() {
+  try {
+    const res = await safeFetch(`${BASE_URL}/orga/chronos`, {}, { fallback: null });
+    if (!res || !res.ok) return {};
+    const data = await res.json();
+    return data.chronos || {};
+  } catch { return {}; }
+}

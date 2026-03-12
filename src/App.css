@@ -1076,3 +1076,249 @@ select.input {
     padding: 1.25rem !important;
   }
 }
+
+/* --- ORGANISATEUR --- */
+
+.btn-info {
+  background: var(--info, #06b6d4);
+  color: #fff;
+  border: none;
+}
+.btn-info:hover { background: #0891b2; }
+
+.btn-warning {
+  background: #f59e0b;
+  color: #fff;
+  border: none;
+}
+.btn-warning:hover { background: #d97706; }
+
+.btn-lg {
+  padding: 0.65rem 1.4rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.btn-sm {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.alert-success {
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--success, #10b981);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Chrono */
+.chrono-display {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.chrono-running { color: var(--success, #10b981); }
+.chrono-stopped { color: var(--muted, #94a3b8); }
+
+.orga-chrono-card {
+  border-left: 4px solid var(--info, #06b6d4);
+}
+
+/* Checkpoints list */
+.orga-checkpoints-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.orga-checkpoint-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface, #f8fafc);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.orga-cp-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary, #4f46e5);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* Teams list */
+.orga-teams-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.orga-team-card {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  overflow: hidden;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.orga-team-card:hover {
+  border-color: var(--info, #06b6d4);
+  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.08);
+}
+.orga-team-card--expanded {
+  border-color: var(--info, #06b6d4);
+  box-shadow: 0 4px 16px rgba(6, 182, 212, 0.1);
+}
+.orga-team-card--finished {
+  border-color: var(--success, #10b981);
+  background: rgba(16, 185, 129, 0.03);
+}
+
+.orga-team-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  gap: 1rem;
+}
+
+.orga-team-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.orga-team-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.orga-team-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.orga-team-chrono {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--success);
+}
+.orga-team-chrono .chrono-display {
+  font-size: 0.85rem;
+}
+
+.orga-team-detail {
+  padding: 0.5rem 1rem 1rem;
+  border-top: 1px solid var(--border, #e2e8f0);
+  background: rgba(0, 0, 0, 0.01);
+  animation: slideDown 0.2s ease;
+}
+
+.orga-checkpoint-table {
+  width: 100%;
+  font-size: 0.82rem;
+}
+.orga-checkpoint-table th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.orga-checkpoint-table td {
+  padding: 0.5rem 0.6rem;
+}
+
+.orga-cp-passed {
+  background: rgba(16, 185, 129, 0.04);
+}
+
+.orga-cp-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid var(--border, #e2e8f0);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.orga-cp-badge--done {
+  background: var(--success, #10b981);
+  color: #fff;
+  border-color: var(--success, #10b981);
+}
+
+.chrono-paused {
+  color: #f59e0b;
+  animation: pulse-dot 1.2s infinite;
+}
+
+.orga-state-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.orga-state-pill--running {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success, #10b981);
+}
+.orga-state-pill--paused {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+}
+.orga-state-pill--stopped {
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--danger, #ef4444);
+}
+
+.orga-team-card--paused {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.02);
+}
+.orga-team-card--stopped {
+  border-color: var(--danger, #ef4444);
+  opacity: 0.7;
+}
+
+@media (max-width: 768px) {
+  .orga-team-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .orga-checkpoint-table th:nth-child(2),
+  .orga-checkpoint-table td:nth-child(2) {
+    display: none;
+  }
+  .chrono-display {
+    font-size: 1.2rem;
+  }
+}

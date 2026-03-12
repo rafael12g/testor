@@ -21,6 +21,19 @@ import {
   insertRaceEvent,
   pruneBeacons,
   pruneServerLogs,
+  registerOrga,
+  loginOrga,
+  getOrgaRegistrationInfo,
+  startRaceChrono,
+  pauseRaceChrono,
+  resumeRaceChrono,
+  stopRaceChrono,
+  pauseTeamChrono,
+  resumeTeamChrono,
+  stopTeamChrono,
+  getRaceChrono,
+  recordTeamCheckpoint,
+  getAllRaceChronos,
 } from './db.js';
 
 const app = express();
@@ -84,6 +97,172 @@ app.post('/api/auth/admin', authLimiter, async (req, res) => {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'testor-api', apiConnected: isApiAvailable(), now: Date.now() });
+});
+
+// --- Organisateur : inscription (max 3/h) ---
+
+const orgaRegisterLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, message: { ok: false, error: 'Trop de tentatives d\'inscription' } });
+
+app.post('/api/auth/register', orgaRegisterLimiter, async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  if (username.length < 3 || username.length > 30) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur entre 3 et 30 caractères' });
+  if (password.length < 4) return res.status(400).json({ ok: false, error: 'Mot de passe trop court (4 caractères minimum)' });
+  try {
+    const result = await registerOrga(username, password);
+    if (!result.ok) return res.status(429).json(result);
+    await log('info', `Compte orga créé: ${username}`, { username });
+    return res.status(201).json(result);
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+app.get('/api/auth/register-info', (_req, res) => {
+  res.json({ ok: true, ...getOrgaRegistrationInfo() });
+});
+
+// --- Organisateur : connexion ---
+
+app.post('/api/auth/login', authLimiter, async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  try {
+    const result = await loginOrga(username, password);
+    if (!result.ok) return res.status(401).json(result);
+    await log('info', `Orga connecté: ${username}`, { username });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+// --- Organisateur : démarrer une course (chrono) ---
+
+app.post('/api/orga/courses/:raceId/start', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+  try {
+    const chrono = startRaceChrono(raceId);
+    await insertRaceEvent(raceId, 'race_started', { startedAt: chrono.startedAt });
+    await log('info', `Course ${raceId} démarrée par un orga`, { raceId });
+    broadcast('race_started', { raceId, startedAt: chrono.startedAt });
+    return res.json({ ok: true, chrono });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+// --- Organisateur : pause chrono course ---
+
+app.post('/api/orga/courses/:raceId/pause', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+  try {
+    const chrono = pauseRaceChrono(raceId);
+    if (!chrono) return res.status(404).json({ ok: false, error: 'Course non trouvée' });
+    await insertRaceEvent(raceId, 'race_paused', { elapsed: chrono.elapsed });
+    await log('info', `Course ${raceId} mise en pause`, { raceId });
+    broadcast('race_paused', { raceId, elapsed: chrono.elapsed });
+    return res.json({ ok: true, chrono });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+// --- Organisateur : reprendre chrono course ---
+
+app.post('/api/orga/courses/:raceId/resume', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+  try {
+    const chrono = resumeRaceChrono(raceId);
+    if (!chrono) return res.status(404).json({ ok: false, error: 'Course non trouvée ou pas en pause' });
+    await insertRaceEvent(raceId, 'race_resumed', { elapsed: chrono.elapsed });
+    await log('info', `Course ${raceId} reprise`, { raceId });
+    broadcast('race_resumed', { raceId });
+    return res.json({ ok: true, chrono });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+// --- Organisateur : arrêter chrono course ---
+
+app.post('/api/orga/courses/:raceId/stop', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+  try {
+    const chrono = stopRaceChrono(raceId);
+    if (!chrono) return res.status(404).json({ ok: false, error: 'Course non trouvée' });
+    await insertRaceEvent(raceId, 'race_stopped', { elapsed: chrono.elapsed });
+    await log('info', `Course ${raceId} arrêtée`, { raceId, elapsed: chrono.elapsed });
+    broadcast('race_stopped', { raceId, elapsed: chrono.elapsed });
+    return res.json({ ok: true, chrono });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+// --- Organisateur : pause/resume/stop chrono d'une équipe ---
+
+app.post('/api/orga/courses/:raceId/teams/:teamCode/pause', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
+  const tc = pauseTeamChrono(raceId, teamCode);
+  if (!tc) return res.status(404).json({ ok: false, error: 'Équipe ou course non trouvée' });
+  await insertRaceEvent(raceId, 'team_paused', { teamCode, elapsed: tc.elapsed });
+  broadcast('team_paused', { raceId, teamCode });
+  return res.json({ ok: true, teamChrono: tc });
+});
+
+app.post('/api/orga/courses/:raceId/teams/:teamCode/resume', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
+  const tc = resumeTeamChrono(raceId, teamCode);
+  if (!tc) return res.status(404).json({ ok: false, error: 'Équipe non en pause ou course non en cours' });
+  await insertRaceEvent(raceId, 'team_resumed', { teamCode });
+  broadcast('team_resumed', { raceId, teamCode });
+  return res.json({ ok: true, teamChrono: tc });
+});
+
+app.post('/api/orga/courses/:raceId/teams/:teamCode/stop', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
+  const tc = stopTeamChrono(raceId, teamCode);
+  if (!tc) return res.status(404).json({ ok: false, error: 'Équipe ou course non trouvée' });
+  await insertRaceEvent(raceId, 'team_stopped', { teamCode, elapsed: tc.elapsed });
+  broadcast('team_stopped', { raceId, teamCode, elapsed: tc.elapsed });
+  return res.json({ ok: true, teamChrono: tc });
+});
+
+// --- Organisateur : état du chrono d'une course ---
+
+app.get('/api/orga/courses/:raceId/chrono', (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+  const chrono = getRaceChrono(raceId);
+  return res.json({ ok: true, chrono });
+});
+
+// --- Organisateur : enregistrer passage d'une équipe à une balise ---
+
+app.post('/api/orga/courses/:raceId/teams/:teamCode/checkpoint', async (req, res) => {
+  const raceId = String(req.params.raceId || '').trim();
+  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
+  const { checkpointIndex } = req.body || {};
+  if (!raceId || !teamCode || checkpointIndex == null) return res.status(400).json({ ok: false, error: 'raceId, teamCode et checkpointIndex requis' });
+  const tc = recordTeamCheckpoint(raceId, teamCode, Number(checkpointIndex));
+  if (!tc) return res.status(404).json({ ok: false, error: 'Course non démarrée' });
+  await insertRaceEvent(raceId, 'checkpoint_reached', { teamCode, checkpointIndex, elapsed: tc.checkpoints.at(-1)?.elapsed });
+  broadcast('checkpoint_reached', { raceId, teamCode, checkpointIndex, elapsed: tc.checkpoints.at(-1)?.elapsed });
+  return res.json({ ok: true, teamChrono: tc });
+});
+
+// --- Organisateur : tous les chronos ---
+
+app.get('/api/orga/chronos', (_req, res) => {
+  res.json({ ok: true, chronos: getAllRaceChronos() });
 });
 
 // --- Logs (vrais logs stockés en BDD) ---

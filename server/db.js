@@ -1,4 +1,4 @@
-// ─── Stockage en mémoire (logs, pings, events) ───────────────
+// ─── Stockage en mémoire (logs, pings, events, orga) ───────────────
 // Pas de BDD locale — tout passe par l'API externe pour les courses.
 // Les logs / pings / events sont éphémères et stockés en RAM.
 
@@ -12,6 +12,235 @@ let events = [];
 let idCounter = 1;
 
 function nextId() { return idCounter++; }
+
+// ─── Organisateurs (en mémoire) ───
+
+let orgaAccounts = [];           // { id, username, password, createdAt }
+let orgaRegistrations = [];      // timestamps des inscriptions (pour rate-limit 3/h)
+let raceChronos = {};            // { [raceId]: { startedAt, teamChronos: { [teamCode]: { startedAt, checkpoints: [{index, time}] } } } }
+
+const ORGA_REGISTER_LIMIT = 3;
+const ORGA_REGISTER_WINDOW = 60 * 60 * 1000; // 1 heure
+
+export async function registerOrga(username, password) {
+  if (!apiUrl) return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
+  const now = Date.now();
+  // Nettoyer les anciennes inscriptions (> 1h)
+  orgaRegistrations = orgaRegistrations.filter(t => now - t < ORGA_REGISTER_WINDOW);
+  // Vérifier la limite locale
+  if (orgaRegistrations.length >= ORGA_REGISTER_LIMIT) {
+    return { ok: false, error: `Limite atteinte : ${ORGA_REGISTER_LIMIT} inscriptions par heure. Réessaie plus tard.` };
+  }
+  // Même logique que loginViaApi mais POST /api/auth/register avec role organisateur
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
+
+    const res = await fetch(`${apiUrl}/api/auth/register`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username, password, role: 'organisateur' }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      const errMsg = errData.error || errData.message || (errData.errors && errData.errors.map(e => e.msg).join(', ')) || res.statusText;
+      console.warn(`Register orga échoué: ${res.status} — ${errMsg}`);
+      if (res.status === 409) return { ok: false, error: 'Ce nom d\'utilisateur est déjà pris.' };
+      return { ok: false, error: errMsg };
+    }
+
+    const data = await res.json();
+    orgaRegistrations.push(now);
+    console.log(`Compte orga créé via API → ${username} ✅`);
+    return { ok: true, account: data.account || data.user || { username } };
+  } catch (err) {
+    console.warn(`Erreur création compte orga: ${err.message}`);
+    return { ok: false, error: 'Erreur de connexion à l\'API' };
+  }
+}
+
+export async function loginOrga(username, password) {
+  if (!apiUrl) return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
+  // Même logique que loginViaApi
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
+
+    const res = await fetch(`${apiUrl}/api/auth/login`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username, password }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      console.warn(`Login orga échoué: ${res.status} — ${errData.error || res.statusText}`);
+      return { ok: false, error: errData.error || 'Identifiants incorrects' };
+    }
+
+    const data = await res.json();
+    console.log(`Orga connecté via API → ${username} ✅`);
+    return { ok: true, account: data.account || data.user || { username } };
+  } catch (err) {
+    console.warn(`Login orga échoué: ${err.message}`);
+    return { ok: false, error: 'Erreur de connexion à l\'API' };
+  }
+}
+
+export function getOrgaRegistrationInfo() {
+  const now = Date.now();
+  orgaRegistrations = orgaRegistrations.filter(t => now - t < ORGA_REGISTER_WINDOW);
+  return { used: orgaRegistrations.length, limit: ORGA_REGISTER_LIMIT, windowMs: ORGA_REGISTER_WINDOW };
+}
+
+// ─── Chrono des courses (en mémoire) ───
+// Chrono = { startedAt, state: 'running'|'paused'|'stopped', elapsed: accumulé en ms, pausedAt, teamChronos }
+// TeamChrono = { state: 'running'|'paused'|'stopped', elapsed: accumulé, pausedAt, checkpoints }
+
+function getEffectiveRaceElapsed(chrono) {
+  if (!chrono || !chrono.startedAt) return 0;
+  if (chrono.state === 'stopped') return chrono.elapsed || 0;
+  if (chrono.state === 'paused') return chrono.elapsed || 0;
+  return (chrono.elapsed || 0) + (Date.now() - (chrono.resumedAt || chrono.startedAt));
+}
+
+function getEffectiveTeamElapsed(tc, chrono) {
+  if (!tc) return 0;
+  if (tc.state === 'stopped') return tc.elapsed || 0;
+  if (tc.state === 'paused') return tc.elapsed || 0;
+  // Si la course est en pause, l'équipe aussi
+  if (chrono?.state === 'paused' || chrono?.state === 'stopped') return tc.elapsed || 0;
+  return (tc.elapsed || 0) + (Date.now() - (tc.resumedAt || tc.startedAt || chrono?.resumedAt || chrono?.startedAt || Date.now()));
+}
+
+export function startRaceChrono(raceId) {
+  const now = Date.now();
+  raceChronos[raceId] = { startedAt: now, resumedAt: now, state: 'running', elapsed: 0, teamChronos: {} };
+  return raceChronos[raceId];
+}
+
+export function pauseRaceChrono(raceId) {
+  const c = raceChronos[raceId];
+  if (!c || c.state !== 'running') return c || null;
+  const now = Date.now();
+  c.elapsed = (c.elapsed || 0) + (now - (c.resumedAt || c.startedAt));
+  c.pausedAt = now;
+  c.state = 'paused';
+  // Pause toutes les équipes en cours
+  for (const tc of Object.values(c.teamChronos)) {
+    if (tc.state === 'running') {
+      tc.elapsed = (tc.elapsed || 0) + (now - (tc.resumedAt || tc.startedAt || c.startedAt));
+      tc.pausedAt = now;
+      tc.state = 'paused';
+    }
+  }
+  return c;
+}
+
+export function resumeRaceChrono(raceId) {
+  const c = raceChronos[raceId];
+  if (!c || c.state !== 'paused') return c || null;
+  const now = Date.now();
+  c.resumedAt = now;
+  c.state = 'running';
+  delete c.pausedAt;
+  // Reprendre toutes les équipes en pause
+  for (const tc of Object.values(c.teamChronos)) {
+    if (tc.state === 'paused') {
+      tc.resumedAt = now;
+      tc.state = 'running';
+      delete tc.pausedAt;
+    }
+  }
+  return c;
+}
+
+export function stopRaceChrono(raceId) {
+  const c = raceChronos[raceId];
+  if (!c) return null;
+  const now = Date.now();
+  if (c.state === 'running') {
+    c.elapsed = (c.elapsed || 0) + (now - (c.resumedAt || c.startedAt));
+  }
+  c.state = 'stopped';
+  c.stoppedAt = now;
+  // Stop toutes les équipes
+  for (const tc of Object.values(c.teamChronos)) {
+    if (tc.state === 'running') {
+      tc.elapsed = (tc.elapsed || 0) + (now - (tc.resumedAt || tc.startedAt || c.startedAt));
+    }
+    tc.state = 'stopped';
+    tc.stoppedAt = now;
+  }
+  return c;
+}
+
+// --- Pause/Resume/Stop par équipe ---
+
+export function pauseTeamChrono(raceId, teamCode) {
+  const c = raceChronos[raceId];
+  if (!c) return null;
+  const tc = c.teamChronos[teamCode];
+  if (!tc || tc.state !== 'running') return tc || null;
+  const now = Date.now();
+  tc.elapsed = (tc.elapsed || 0) + (now - (tc.resumedAt || tc.startedAt || c.resumedAt || c.startedAt));
+  tc.pausedAt = now;
+  tc.state = 'paused';
+  return tc;
+}
+
+export function resumeTeamChrono(raceId, teamCode) {
+  const c = raceChronos[raceId];
+  if (!c || c.state !== 'running') return null; // course doit tourner
+  const tc = c.teamChronos[teamCode];
+  if (!tc || tc.state !== 'paused') return tc || null;
+  const now = Date.now();
+  tc.resumedAt = now;
+  tc.state = 'running';
+  delete tc.pausedAt;
+  return tc;
+}
+
+export function stopTeamChrono(raceId, teamCode) {
+  const c = raceChronos[raceId];
+  if (!c) return null;
+  const tc = c.teamChronos[teamCode];
+  if (!tc) return null;
+  const now = Date.now();
+  if (tc.state === 'running') {
+    tc.elapsed = (tc.elapsed || 0) + (now - (tc.resumedAt || tc.startedAt || c.resumedAt || c.startedAt));
+  }
+  tc.state = 'stopped';
+  tc.stoppedAt = now;
+  return tc;
+}
+
+export function getRaceChrono(raceId) {
+  return raceChronos[raceId] || null;
+}
+
+export function recordTeamCheckpoint(raceId, teamCode, checkpointIndex) {
+  const c = raceChronos[raceId];
+  if (!c || c.state === 'stopped') return null;
+  if (!c.teamChronos[teamCode]) {
+    c.teamChronos[teamCode] = { startedAt: c.startedAt, resumedAt: c.resumedAt, state: c.state, elapsed: c.elapsed || 0, checkpoints: [] };
+  }
+  const tc = c.teamChronos[teamCode];
+  if (tc.state === 'stopped') return tc;
+  const raceElapsed = getEffectiveRaceElapsed(c);
+  // Éviter les doublons de checkpoint
+  if (!tc.checkpoints.find(cp => cp.index === checkpointIndex)) {
+    tc.checkpoints.push({ index: checkpointIndex, time: Date.now(), elapsed: raceElapsed });
+  }
+  return tc;
+}
+
+export function getAllRaceChronos() {
+  return raceChronos;
+}
 
 // ─── beacon_pings (en mémoire) ───
 
