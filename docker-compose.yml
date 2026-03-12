@@ -3,7 +3,7 @@ services:
   # ── Application (frontend + API) ──────────────────────────────
   app:
     build: .
-    container_name: testor-app
+    container_name: frontend-course-orientation
     restart: unless-stopped
     ports:
       - "80:8787"
