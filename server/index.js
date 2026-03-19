@@ -44,6 +44,7 @@ const PORT = Number(process.env.PORT) || 8787;
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+let lastKnownApiAvailability = null;
 
 // ─── helpers ───
 
@@ -59,6 +60,24 @@ async function log(level, message, meta = null) {
   const entry = await insertServerLog(level, message, meta);
   broadcast('log', entry);
   return entry;
+}
+
+async function refreshExternalApiStatus() {
+  try {
+    await initApi();
+  } catch (err) {
+    console.warn('Échec rafraîchissement API externe:', err?.message || err);
+  }
+
+  const nowAvailable = isApiAvailable();
+  if (lastKnownApiAvailability === null || lastKnownApiAvailability !== nowAvailable) {
+    lastKnownApiAvailability = nowAvailable;
+    if (nowAvailable) {
+      await log('info', 'API externe disponible');
+    } else {
+      await log('warn', 'API externe indisponible (vérification automatique)');
+    }
+  }
 }
 
 // ─── websocket ───
@@ -451,7 +470,12 @@ app.get('/{*path}', (_req, res) => {
 // ─── start ───
 
 (async () => {
-  try { await initApi(); } catch (err) { console.warn('API externe non disponible:', err.message); }
+  await refreshExternalApiStatus();
+  const apiStatusInterval = setInterval(() => {
+    refreshExternalApiStatus().catch(err => console.warn('Erreur vérification API externe:', err?.message || err));
+  }, 30_000);
+  apiStatusInterval.unref?.();
+
   await log('info', 'Backend démarré (mémoire + API externe)');
   httpServer.listen(PORT, () => {
     console.log(`Backend prêt      → http://localhost:${PORT}`);
