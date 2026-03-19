@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ShieldCheck, Activity, LineChart, UserPlus } from 'lucide-react';
-import { registerOrga } from '../api';
+import { registerOrga, fetchOrgaAccounts, deleteOrgaAccount, updateOrgaPassword } from '../api';
 
 export default function AdminPanel({ races, adminLogs, raceHistory, permissions = {} }) {
   const canSeeCourses = permissions.acces_courses_lecture !== false;
@@ -13,6 +13,29 @@ export default function AdminPanel({ races, adminLogs, raceHistory, permissions 
   const [orgaConfirm, setOrgaConfirm] = useState('');
   const [orgaError, setOrgaError] = useState('');
   const [orgaSuccess, setOrgaSuccess] = useState('');
+  const [orgaAccounts, setOrgaAccounts] = useState([]);
+  const [orgaAccountsLoading, setOrgaAccountsLoading] = useState(false);
+  const [orgaActionError, setOrgaActionError] = useState('');
+  const [orgaActionSuccess, setOrgaActionSuccess] = useState('');
+  const [orgaPasswordDrafts, setOrgaPasswordDrafts] = useState({});
+
+  const loadOrgaAccounts = async () => {
+    setOrgaAccountsLoading(true);
+    setOrgaActionError('');
+    try {
+      const items = await fetchOrgaAccounts();
+      setOrgaAccounts(Array.isArray(items) ? items : []);
+    } catch {
+      setOrgaAccounts([]);
+      setOrgaActionError('Impossible de charger les comptes organisateurs.');
+    } finally {
+      setOrgaAccountsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadOrgaAccounts();
+  }, []);
 
   const handleCreateOrga = async () => {
     setOrgaError(''); setOrgaSuccess('');
@@ -24,6 +47,34 @@ export default function AdminPanel({ races, adminLogs, raceHistory, permissions 
     if (!result.ok) { setOrgaError(result.error || 'Erreur lors de la création.'); return; }
     setOrgaSuccess(`Compte organisateur "${orgaUsername}" créé avec succès !`);
     setOrgaUsername(''); setOrgaPassword(''); setOrgaConfirm('');
+    loadOrgaAccounts();
+  };
+
+  const getOrgaIdentifier = (acc) => String(acc?.id ?? acc?.username ?? '').trim();
+
+  const handleDeleteOrga = async (acc) => {
+    const identifier = getOrgaIdentifier(acc);
+    if (!identifier) { setOrgaActionError('Identifiant organisateur introuvable.'); return; }
+    if (!window.confirm(`Supprimer le compte organisateur "${acc.username || acc.displayName || identifier}" ?`)) return;
+    setOrgaActionError('');
+    setOrgaActionSuccess('');
+    const result = await deleteOrgaAccount(identifier);
+    if (!result.ok) { setOrgaActionError(result.error || 'Suppression impossible.'); return; }
+    setOrgaActionSuccess(`Compte "${acc.username || identifier}" supprimé.`);
+    loadOrgaAccounts();
+  };
+
+  const handleUpdateOrgaPassword = async (acc) => {
+    const identifier = getOrgaIdentifier(acc);
+    const pwd = String(orgaPasswordDrafts[identifier] || '');
+    if (!identifier) { setOrgaActionError('Identifiant organisateur introuvable.'); return; }
+    if (pwd.length < 4) { setOrgaActionError('Mot de passe trop court (4 caractères min).'); return; }
+    setOrgaActionError('');
+    setOrgaActionSuccess('');
+    const result = await updateOrgaPassword(identifier, pwd);
+    if (!result.ok) { setOrgaActionError(result.error || 'Modification impossible.'); return; }
+    setOrgaActionSuccess(`Mot de passe mis à jour pour "${acc.username || identifier}".`);
+    setOrgaPasswordDrafts(prev => ({ ...prev, [identifier]: '' }));
   };
 
   return (
@@ -70,6 +121,57 @@ export default function AdminPanel({ races, adminLogs, raceHistory, permissions 
           <button onClick={handleCreateOrga} className="btn btn-info"><UserPlus size={16} /> Créer le compte</button>
         </div>
       </div>
+
+      <div className="section-divider" />
+      <div className="card-header">
+        <div>
+          <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><UserPlus size={18} style={{ color: 'var(--danger)' }} /> Gérer les comptes organisateurs</h3>
+          <p className="muted">Suppression et réinitialisation de mot de passe via l'API externe.</p>
+        </div>
+        <button onClick={loadOrgaAccounts} className="btn btn-ghost" disabled={orgaAccountsLoading}>{orgaAccountsLoading ? 'Chargement...' : 'Rafraîchir'}</button>
+      </div>
+      {orgaActionError && <div className="alert" style={{ marginBottom: '0.5rem' }}>{orgaActionError}</div>}
+      {orgaActionSuccess && <div className="alert alert-success" style={{ marginBottom: '0.5rem' }}>{orgaActionSuccess}</div>}
+      <table className="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Utilisateur</th>
+            <th>Rôle</th>
+            <th>Nouveau mot de passe</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {!orgaAccountsLoading && orgaAccounts.length === 0 && (
+            <tr><td colSpan={5} className="muted">Aucun compte organisateur récupéré.</td></tr>
+          )}
+          {orgaAccounts.map((acc, i) => {
+            const identifier = getOrgaIdentifier(acc) || `row-${i}`;
+            return (
+              <tr key={identifier}>
+                <td>{acc.id ?? '-'}</td>
+                <td>{acc.username || acc.displayName || '-'}</td>
+                <td>{acc.role || (Array.isArray(acc.roles) ? acc.roles.join(', ') : '-') || '-'}</td>
+                <td>
+                  <input
+                    type="password"
+                    value={orgaPasswordDrafts[identifier] || ''}
+                    onChange={e => setOrgaPasswordDrafts(prev => ({ ...prev, [identifier]: e.target.value }))}
+                    placeholder="Nouveau mot de passe"
+                    className="input"
+                    style={{ minWidth: 220 }}
+                  />
+                </td>
+                <td style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button onClick={() => handleUpdateOrgaPassword(acc)} className="btn btn-info">Modifier MDP</button>
+                  <button onClick={() => handleDeleteOrga(acc)} className="btn btn-danger">Supprimer</button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
 
       <div className="section-divider" />
       <div className="card-header">

@@ -144,6 +144,43 @@ export async function fetchOrgaRegisterInfo() {
   } catch { return null; }
 }
 
+export async function fetchOrgaAccounts() {
+  try {
+    const res = await safeFetch(`${BASE_URL}/admin/organisateurs`, {}, { fallback: [] });
+    if (!res || !res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.items) ? data.items : [];
+  } catch { return []; }
+}
+
+export async function deleteOrgaAccount(identifier) {
+  try {
+    const id = encodeURIComponent(String(identifier || '').trim());
+    if (!id) return { ok: false, error: 'Identifiant manquant' };
+    const res = await safeFetch(`${BASE_URL}/admin/organisateurs/${id}`, { method: 'DELETE' });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || 'Suppression impossible' };
+    return { ok: true };
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
+export async function updateOrgaPassword(identifier, password) {
+  try {
+    const id = encodeURIComponent(String(identifier || '').trim());
+    if (!id) return { ok: false, error: 'Identifiant manquant' };
+    const res = await safeFetch(`${BASE_URL}/admin/organisateurs/${id}/password`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || 'Modification impossible' };
+    return { ok: true };
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
 export async function startRace(raceId) {
   try {
     const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/start`, {

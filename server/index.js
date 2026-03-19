@@ -24,6 +24,9 @@ import {
   registerOrga,
   loginOrga,
   getOrgaRegistrationInfo,
+  listOrgaAccountsApi,
+  deleteOrgaAccountApi,
+  updateOrgaPasswordApi,
   startRaceChrono,
   pauseRaceChrono,
   resumeRaceChrono,
@@ -86,10 +89,11 @@ app.use('/api', apiLimiter);
 app.post('/api/auth/admin', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
   try {
     const result = await loginViaApi(username, password);
     if (!result.ok) return res.status(401).json({ ok: false, error: result.error || 'Identifiants incorrects' });
-    return res.json({ ok: true, permissions: result.permissions || null });
+    return res.json({ ok: true, permissions: result.permissions || null, account: result.account || null });
   } catch (err) {
     return res.status(500).json({ ok: false, error: 'Erreur de connexion à l\'API' });
   }
@@ -127,6 +131,7 @@ app.get('/api/auth/register-info', (_req, res) => {
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
   try {
     const result = await loginOrga(username, password);
     if (!result.ok) return res.status(401).json(result);
@@ -134,6 +139,48 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+  }
+});
+
+// --- Admin : gestion comptes organisateurs via API externe ---
+
+app.get('/api/admin/organisateurs', async (_req, res) => {
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  try {
+    const items = await listOrgaAccountsApi();
+    return res.json({ ok: true, items, count: items.length });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || 'Erreur lecture comptes organisateurs' });
+  }
+});
+
+app.delete('/api/admin/organisateurs/:identifier', async (req, res) => {
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  const identifier = String(req.params.identifier || '').trim();
+  if (!identifier) return res.status(400).json({ ok: false, error: 'Identifiant requis' });
+  try {
+    const result = await deleteOrgaAccountApi(identifier);
+    if (!result.ok) return res.status(400).json(result);
+    await log('warn', `Compte orga supprimé: ${identifier}`, { identifier });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || 'Erreur suppression compte organisateur' });
+  }
+});
+
+app.patch('/api/admin/organisateurs/:identifier/password', async (req, res) => {
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  const identifier = String(req.params.identifier || '').trim();
+  const newPassword = String(req.body?.password || '').trim();
+  if (!identifier) return res.status(400).json({ ok: false, error: 'Identifiant requis' });
+  if (!newPassword) return res.status(400).json({ ok: false, error: 'Nouveau mot de passe requis' });
+  try {
+    const result = await updateOrgaPasswordApi(identifier, newPassword);
+    if (!result.ok) return res.status(400).json(result);
+    await log('warn', `Mot de passe orga modifié: ${identifier}`, { identifier });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || 'Erreur modification mot de passe' });
   }
 });
 

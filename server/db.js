@@ -10,12 +10,12 @@ let pings = [];
 let logs = [];
 let events = [];
 let idCounter = 1;
+let adminAuthToken = null; // token admin API (récupéré au login) pour appels de gestion comptes
 
 function nextId() { return idCounter++; }
 
 // ─── Organisateurs (en mémoire) ───
 
-let orgaAccounts = [];           // { id, username, password, createdAt }
 let orgaRegistrations = [];      // timestamps des inscriptions (pour rate-limit 3/h)
 let raceChronos = {};            // { [raceId]: { startedAt, teamChronos: { [teamCode]: { startedAt, checkpoints: [{index, time}] } } } }
 
@@ -23,7 +23,7 @@ const ORGA_REGISTER_LIMIT = 3;
 const ORGA_REGISTER_WINDOW = 60 * 60 * 1000; // 1 heure
 
 export async function registerOrga(username, password) {
-  if (!apiUrl) return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
+  if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
   const now = Date.now();
   // Nettoyer les anciennes inscriptions (> 1h)
   orgaRegistrations = orgaRegistrations.filter(t => now - t < ORGA_REGISTER_WINDOW);
@@ -62,8 +62,7 @@ export async function registerOrga(username, password) {
 }
 
 export async function loginOrga(username, password) {
-  if (!apiUrl) return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
-  // Même logique que loginViaApi
+  if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
@@ -82,8 +81,65 @@ export async function loginOrga(username, password) {
     }
 
     const data = await res.json();
+
+    const decodeJwtPayload = (token) => {
+      try {
+        const parts = String(token || '').split('.');
+        if (parts.length < 2) return null;
+        const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+        const json = Buffer.from(padded, 'base64').toString('utf8');
+        return JSON.parse(json);
+      } catch {
+        return null;
+      }
+    };
+
+    const account = data.account || data.user || data.utilisateur || null;
+    const token = data?.token || data?.accessToken || data?.jwt || data?.access_token;
+    const tokenPayload = decodeJwtPayload(token);
+
+    const roleValues = [];
+    const collectRoles = (value) => {
+      if (value == null) return;
+      if (Array.isArray(value)) return value.forEach(collectRoles);
+      if (typeof value === 'object') {
+        collectRoles(value.role);
+        collectRoles(value.roles);
+        collectRoles(value.name);
+        collectRoles(value.code);
+        collectRoles(value.label);
+        collectRoles(value.authority);
+        return;
+      }
+      if (typeof value === 'string') {
+        const v = value.trim();
+        if (!v) return;
+        if (v.includes(',') || v.includes(' ')) {
+          return v.split(/[\s,]+/).forEach(s => { if (s) roleValues.push(s.toLowerCase()); });
+        }
+        roleValues.push(v.toLowerCase());
+      }
+    };
+
+    collectRoles(data?.role);
+    collectRoles(data?.roles);
+    collectRoles(account?.role);
+    collectRoles(account?.roles);
+    collectRoles(tokenPayload?.role);
+    collectRoles(tokenPayload?.roles);
+    collectRoles(tokenPayload?.authorities);
+    collectRoles(tokenPayload?.scope);
+
+    const orgaRoleSet = new Set(['organisateur', 'orga', 'organizer', 'role_organisateur', 'role_orga']);
+    const isOrga = roleValues.some(r => orgaRoleSet.has(r));
+    if (!isOrga) {
+      console.warn(`Login orga refusé (non-organisateur): ${username} [roles=${roleValues.join(',') || 'inconnu'}]`);
+      return { ok: false, error: 'Compte non autorisé pour l\'espace organisateur' };
+    }
+
     console.log(`Orga connecté via API → ${username} ✅`);
-    return { ok: true, account: data.account || data.user || { username } };
+    return { ok: true, role: 'orga', account: account || { username } };
   } catch (err) {
     console.warn(`Login orga échoué: ${err.message}`);
     return { ok: false, error: 'Erreur de connexion à l\'API' };
@@ -94,6 +150,218 @@ export function getOrgaRegistrationInfo() {
   const now = Date.now();
   orgaRegistrations = orgaRegistrations.filter(t => now - t < ORGA_REGISTER_WINDOW);
   return { used: orgaRegistrations.length, limit: ORGA_REGISTER_LIMIT, windowMs: ORGA_REGISTER_WINDOW };
+}
+
+function collectRoleValues(value, into) {
+  if (value == null) return;
+  if (Array.isArray(value)) return value.forEach(v => collectRoleValues(v, into));
+  if (typeof value === 'object') {
+    collectRoleValues(value.role, into);
+    collectRoleValues(value.roles, into);
+    collectRoleValues(value.name, into);
+    collectRoleValues(value.code, into);
+    collectRoleValues(value.label, into);
+    collectRoleValues(value.authority, into);
+    collectRoleValues(value.type, into);
+    return;
+  }
+  if (typeof value === 'string') {
+    const v = value.trim();
+    if (!v) return;
+    if (v.includes(',') || v.includes(' ')) {
+      v.split(/[\s,]+/).forEach(s => { if (s) into.push(s.toLowerCase()); });
+      return;
+    }
+    into.push(v.toLowerCase());
+  }
+}
+
+function normalizeUserListPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  const candidates = [
+    payload.items,
+    payload.data,
+    payload.users,
+    payload.utilisateurs,
+    payload.accounts,
+    payload.comptes,
+    payload.results,
+  ];
+  for (const c of candidates) if (Array.isArray(c)) return c;
+  return [];
+}
+
+function parseAccount(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const roles = [];
+  collectRoleValues(raw.role, roles);
+  collectRoleValues(raw.roles, roles);
+  collectRoleValues(raw.profil, roles);
+  collectRoleValues(raw.type, roles);
+
+  const adminRoleSet = new Set(['admin', 'administrateur', 'role_admin', 'superadmin', 'super_admin']);
+  const orgaRoleSet = new Set(['organisateur', 'orga', 'organizer', 'role_organisateur', 'role_orga']);
+
+  const isAdmin = roles.some(r => adminRoleSet.has(r))
+    || raw.admin === true
+    || raw.isAdmin === true
+    || raw.is_admin === true
+    || raw.estAdmin === true
+    || raw.est_admin === true;
+
+  const isOrga = roles.some(r => orgaRoleSet.has(r));
+
+  const id = raw.id ?? raw.user_id ?? raw.userId ?? raw.id_user ?? raw.id_utilisateur ?? raw.utilisateur_id ?? null;
+  const username = raw.username || raw.nom_utilisateur || raw.login || raw.email || raw.nom || null;
+
+  if (!username && id == null) return null;
+
+  return {
+    id,
+    username,
+    displayName: raw.nom_complet || raw.displayName || raw.fullName || username || `Utilisateur ${id}`,
+    role: raw.role || roles[0] || null,
+    roles,
+    isAdmin,
+    isOrga,
+    raw,
+  };
+}
+
+async function apiRawFetch(endpoint, { method = 'GET', body } = {}) {
+  if (!apiUrl) throw new Error('API non configurée (API_URL manquant)');
+  const authHeaders = [];
+  if (adminAuthToken) authHeaders.push({ 'Authorization': `Bearer ${adminAuthToken}` });
+  if (process.env.API_KEY) authHeaders.push({ 'Authorization': `ApiKey ${process.env.API_KEY}` });
+  if (authHeaders.length === 0) throw new Error('Aucun moyen d\'authentification API disponible');
+
+  let last = null;
+  for (const authHeader of authHeaders) {
+    const headers = { 'Content-Type': 'application/json', ...authHeader };
+    const res = await fetch(`${apiUrl}${endpoint}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(8000),
+    });
+
+    let data = null;
+    try { data = await res.json(); } catch { data = null; }
+    const result = { ok: res.ok, status: res.status, data };
+    if (result.ok) return result;
+    last = result;
+
+    // Si auth refusée, essayer le prochain mode (Bearer -> ApiKey)
+    if (res.status === 401 || res.status === 403) continue;
+    return result;
+  }
+
+  return last || { ok: false, status: 500, data: null };
+}
+
+export async function listOrgaAccountsApi() {
+  if (!isApiAvailable()) throw new Error('API externe non configurée ou indisponible');
+
+  const endpoints = ['/api/utilisateurs', '/api/users', '/api/accounts', '/api/comptes'];
+  let lastErr = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      const res = await apiRawFetch(endpoint, { method: 'GET' });
+      if (!res?.ok) {
+        lastErr = new Error(`API ${res?.status || 500} sur ${endpoint}`);
+        continue;
+      }
+      const payload = res.data;
+      const list = normalizeUserListPayload(payload);
+      if (!Array.isArray(list)) continue;
+
+      const accounts = list
+        .map(parseAccount)
+        .filter(Boolean)
+        .filter(acc => acc.isOrga && !acc.isAdmin)
+        .map(acc => ({
+          id: acc.id,
+          username: acc.username,
+          displayName: acc.displayName,
+          role: acc.role,
+          roles: acc.roles,
+        }));
+
+      return accounts;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error('Impossible de lire les comptes organisateurs');
+}
+
+export async function deleteOrgaAccountApi(identifier) {
+  if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
+  const target = String(identifier || '').trim();
+  if (!target) return { ok: false, error: 'Identifiant organisateur manquant' };
+
+  const orgaAccounts = await listOrgaAccountsApi().catch(() => []);
+  const account = orgaAccounts.find(a => String(a.id) === target || String(a.username || '').toLowerCase() === target.toLowerCase());
+  if (!account) return { ok: false, error: 'Compte organisateur introuvable' };
+
+  const encodedId = encodeURIComponent(String(account.id ?? target));
+  const encodedUsername = encodeURIComponent(String(account.username || ''));
+
+  const attempts = [
+    { method: 'DELETE', endpoint: `/api/utilisateurs/${encodedId}` },
+    { method: 'DELETE', endpoint: `/api/users/${encodedId}` },
+    { method: 'DELETE', endpoint: `/api/accounts/${encodedId}` },
+    { method: 'DELETE', endpoint: `/api/comptes/${encodedId}` },
+    { method: 'POST', endpoint: `/api/utilisateurs/${encodedId}/delete` },
+    { method: 'POST', endpoint: `/api/users/${encodedId}/delete` },
+    { method: 'DELETE', endpoint: `/api/utilisateurs?username=${encodedUsername}` },
+    { method: 'DELETE', endpoint: `/api/users?username=${encodedUsername}` },
+  ];
+
+  for (const a of attempts) {
+    const res = await apiRawFetch(a.endpoint, { method: a.method }).catch(() => null);
+    if (res?.ok) return { ok: true };
+  }
+
+  return { ok: false, error: 'Suppression non supportée par l\'API externe' };
+}
+
+export async function updateOrgaPasswordApi(identifier, newPassword) {
+  if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
+  const target = String(identifier || '').trim();
+  const password = String(newPassword || '');
+  if (!target) return { ok: false, error: 'Identifiant organisateur manquant' };
+  if (password.length < 4) return { ok: false, error: 'Mot de passe trop court (4 caractères min)' };
+
+  const orgaAccounts = await listOrgaAccountsApi().catch(() => []);
+  const account = orgaAccounts.find(a => String(a.id) === target || String(a.username || '').toLowerCase() === target.toLowerCase());
+  if (!account) return { ok: false, error: 'Compte organisateur introuvable' };
+
+  const encodedId = encodeURIComponent(String(account.id ?? target));
+  const encodedUsername = encodeURIComponent(String(account.username || ''));
+
+  const attempts = [
+    { method: 'PATCH', endpoint: `/api/utilisateurs/${encodedId}/password`, body: { password } },
+    { method: 'PUT', endpoint: `/api/utilisateurs/${encodedId}/password`, body: { password } },
+    { method: 'PATCH', endpoint: `/api/users/${encodedId}/password`, body: { password } },
+    { method: 'PUT', endpoint: `/api/users/${encodedId}/password`, body: { password } },
+    { method: 'PATCH', endpoint: `/api/accounts/${encodedId}/password`, body: { password } },
+    { method: 'PATCH', endpoint: `/api/utilisateurs/${encodedId}`, body: { password } },
+    { method: 'PATCH', endpoint: `/api/users/${encodedId}`, body: { password } },
+    { method: 'POST', endpoint: `/api/auth/reset-password`, body: { username: account.username, password, newPassword: password } },
+    { method: 'POST', endpoint: `/api/auth/change-password`, body: { username: account.username, password } },
+    { method: 'PATCH', endpoint: `/api/utilisateurs?username=${encodedUsername}`, body: { password } },
+  ];
+
+  for (const a of attempts) {
+    const res = await apiRawFetch(a.endpoint, { method: a.method, body: a.body }).catch(() => null);
+    if (res?.ok) return { ok: true };
+  }
+
+  return { ok: false, error: 'Modification du mot de passe non supportée par l\'API externe' };
 }
 
 // ─── Chrono des courses (en mémoire) ───
@@ -316,31 +584,37 @@ export async function getRaceHistory(raceId, limit = 50) {
 // ─── API externe (lecture courses — JWT auth) ───
 
 let apiUrl = null;
+let apiReady = false; // vrai si le serveur API répond (même 401/403), faux uniquement si hors ligne
 
 export async function initApi() {
   const url = (process.env.API_URL || '').trim();
   if (!url) {
+    apiReady = false;
     console.log('API_URL non défini — lecture API externe désactivée');
     return;
   }
   apiUrl = url.replace(/\/+$/, '');
-  // Vérifier la connexion avec la clé API
+  // Vérifier que le serveur est joignable — toute réponse HTTP = serveur actif
   try {
     const res = await fetch(`${apiUrl}/api/courses`, {
       headers: { 'Authorization': `ApiKey ${process.env.API_KEY || ''}` },
       signal: AbortSignal.timeout(5000),
     });
+    // Toute réponse HTTP (même 401/403) signifie que le serveur est joignable
+    apiReady = true;
     if (res.ok) {
       console.log(`API externe configurée → ${apiUrl} ✅ (clé API valide)`);
     } else {
-      console.warn(`API externe configurée → ${apiUrl} ⚠️ (réponse ${res.status})`);
+      console.warn(`API externe configurée → ${apiUrl} ⚠️ (réponse ${res.status}, serveur joignable)`);
     }
   } catch (err) {
-    console.warn(`API externe configurée → ${apiUrl} ⚠️ (${err.message})`);
+    // Erreur réseau = serveur vraiment hors ligne
+    apiReady = false;
+    console.warn(`API externe configurée → ${apiUrl} ❌ hors ligne (${err.message})`);
   }
 }
 
-export function isApiAvailable() { return !!apiUrl && !!process.env.API_KEY; }
+export function isApiAvailable() { return !!apiUrl && !!process.env.API_KEY && apiReady; }
 
 export async function apiFetch(endpoint, options = {}) {
   if (!apiUrl) throw new Error('API non configurée (API_URL manquant)');
@@ -530,7 +804,9 @@ export async function getTeamByCodeApi(code) {
 // ─── Login admin via l'API externe ───
 
 export async function loginViaApi(username, password) {
-  if (!apiUrl) return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
+  if (!isApiAvailable()) {
+    return { ok: false, error: 'API externe non configurée (API_URL/API_KEY manquants)' };
+  }
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
@@ -549,8 +825,153 @@ export async function loginViaApi(username, password) {
     }
 
     const data = await res.json();
+
+    const decodeJwtPayload = (token) => {
+      try {
+        const parts = String(token || '').split('.');
+        if (parts.length < 2) return null;
+        const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+        const json = Buffer.from(padded, 'base64').toString('utf8');
+        return JSON.parse(json);
+      } catch {
+        return null;
+      }
+    };
+
+    const pickAccountInPayload = (payload, loginUsername) => {
+      if (!payload || typeof payload !== 'object') return null;
+      const direct = payload.account || payload.user || payload.utilisateur || payload.data;
+      if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
+
+      const list = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload.items)
+          ? payload.items
+          : Array.isArray(payload.users)
+            ? payload.users
+            : Array.isArray(payload.utilisateurs)
+              ? payload.utilisateurs
+              : Array.isArray(payload.data)
+                ? payload.data
+                : null;
+
+      if (!list) return null;
+      const target = String(loginUsername || '').trim().toLowerCase();
+      return list.find((u) => {
+        const candidate = String(u?.username || u?.nom_utilisateur || u?.login || u?.email || '').trim().toLowerCase();
+        return candidate && candidate === target;
+      }) || null;
+    };
+
+    const token = data?.token || data?.accessToken || data?.jwt || data?.access_token;
+    adminAuthToken = token || adminAuthToken;
+    const tokenPayload = decodeJwtPayload(token);
+
+    const fetchAccountFromApi = async (loginUsername) => {
+      if (!token) return null;
+      const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
+
+      const endpoints = [
+        '/api/auth/me',
+        '/api/users/me',
+        '/api/utilisateurs/me',
+        '/api/me',
+        '/api/user',
+        '/api/utilisateurs',
+      ];
+
+      for (const endpoint of endpoints) {
+        try {
+          const meRes = await fetch(`${apiUrl}${endpoint}`, {
+            method: 'GET',
+            headers: authHeaders,
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!meRes.ok) continue;
+          const meData = await meRes.json().catch(() => null);
+          const account = pickAccountInPayload(meData, loginUsername);
+          if (account) return account;
+        } catch {
+          // on tente l'endpoint suivant
+        }
+      }
+
+      return null;
+    };
+
+    const accountFromLogin = pickAccountInPayload(data, username);
+    const accountFromApi = await fetchAccountFromApi(username);
+    const account = accountFromApi || accountFromLogin || { username };
+
+    const roleValues = [];
+    const collectRoles = (value) => {
+      if (value == null) return;
+      if (Array.isArray(value)) {
+        value.forEach(collectRoles);
+        return;
+      }
+      if (typeof value === 'object') {
+        collectRoles(value.role);
+        collectRoles(value.roles);
+        collectRoles(value.name);
+        collectRoles(value.code);
+        collectRoles(value.label);
+        collectRoles(value.authority);
+        collectRoles(value.type);
+        return;
+      }
+      if (typeof value === 'string') {
+        const v = value.trim();
+        if (!v) return;
+        if (v.includes(',') || v.includes(' ')) {
+          v.split(/[\s,]+/).forEach(s => { if (s) roleValues.push(s.toLowerCase()); });
+          return;
+        }
+        roleValues.push(v.toLowerCase());
+      }
+    };
+
+    const hasAdminFlag = (obj) => !!obj && typeof obj === 'object' && (
+      obj.admin === true
+      || obj.isAdmin === true
+      || obj.is_admin === true
+      || obj.estAdmin === true
+      || obj.est_admin === true
+    );
+
+    collectRoles(data?.role);
+    collectRoles(data?.roles);
+    collectRoles(data?.user?.role);
+    collectRoles(data?.user?.roles);
+    collectRoles(data?.account?.role);
+    collectRoles(data?.account?.roles);
+    collectRoles(data?.utilisateur?.role);
+    collectRoles(data?.utilisateur?.roles);
+    collectRoles(account?.role);
+    collectRoles(account?.roles);
+    collectRoles(account?.profil);
+    collectRoles(account?.type);
+    collectRoles(tokenPayload?.role);
+    collectRoles(tokenPayload?.roles);
+    collectRoles(tokenPayload?.authorities);
+    collectRoles(tokenPayload?.scope);
+
+    const adminRoleSet = new Set(['admin', 'administrateur', 'role_admin', 'superadmin', 'super_admin']);
+    const isAdmin = roleValues.some(r => adminRoleSet.has(r))
+      || hasAdminFlag(data)
+      || hasAdminFlag(account)
+      || hasAdminFlag(tokenPayload)
+      || data?.permissions?.admin === true;
+
+    const role = roleValues[0] || '';
+    if (!isAdmin) {
+      console.warn(`Login refusé (non-admin): ${username} [role=${role || 'inconnu'}]`);
+      return { ok: false, error: 'Compte non autorisé pour l\'espace admin' };
+    }
+
     console.log(`Admin connecté via API → ${username} ✅`);
-    return { ok: true, permissions: data.permissions || data.role || { admin: true } };
+    return { ok: true, permissions: data.permissions || { admin: true }, account };
   } catch (err) {
     console.warn(`Échec login admin: ${err.message}`);
     return { ok: false, error: 'Erreur de connexion à l\'API' };

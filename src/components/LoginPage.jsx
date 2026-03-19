@@ -19,7 +19,7 @@ export default function LoginPage({ onLogin, onRunnerJoin }) {
     if (!result.ok) { setError(result.error || 'Identifiants incorrects.'); return; }
     setAdminUsername('');
     setAdminPassword('');
-    onLogin({ role: 'admin', name: 'Admin', permissions: result.permissions || {} });
+    onLogin({ role: 'admin', name: result.account?.username || adminUsername || 'Admin', permissions: result.permissions || {} });
   };
 
   const handleOrgaLogin = async () => {
