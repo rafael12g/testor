@@ -14,24 +14,12 @@ let adminAuthToken = null; // token admin API (récupéré au login) pour appels
 
 function nextId() { return idCounter++; }
 
-// ─── Organisateurs (en mémoire) ───
+// ─── Organisateurs (100% gérés par API externe) ───
 
-let orgaRegistrations = [];      // timestamps des inscriptions (pour rate-limit 3/h)
 let raceChronos = {};            // { [raceId]: { startedAt, teamChronos: { [teamCode]: { startedAt, checkpoints: [{index, time}] } } } }
-
-const ORGA_REGISTER_LIMIT = 3;
-const ORGA_REGISTER_WINDOW = 60 * 60 * 1000; // 1 heure
 
 export async function registerOrga(username, password) {
   if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
-  const now = Date.now();
-  // Nettoyer les anciennes inscriptions (> 1h)
-  orgaRegistrations = orgaRegistrations.filter(t => now - t < ORGA_REGISTER_WINDOW);
-  // Vérifier la limite locale
-  if (orgaRegistrations.length >= ORGA_REGISTER_LIMIT) {
-    return { ok: false, error: `Limite atteinte : ${ORGA_REGISTER_LIMIT} inscriptions par heure. Réessaie plus tard.` };
-  }
-  // Même logique que loginViaApi mais POST /api/auth/register avec role organisateur
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
@@ -48,11 +36,11 @@ export async function registerOrga(username, password) {
       const errMsg = errData.error || errData.message || (errData.errors && errData.errors.map(e => e.msg).join(', ')) || res.statusText;
       console.warn(`Register orga échoué: ${res.status} — ${errMsg}`);
       if (res.status === 409) return { ok: false, error: 'Ce nom d\'utilisateur est déjà pris.' };
+      if (res.status === 429) return { ok: false, error: 'Trop de tentatives. Réessaie plus tard.' };
       return { ok: false, error: errMsg };
     }
 
     const data = await res.json();
-    orgaRegistrations.push(now);
     console.log(`Compte orga créé via API → ${username} ✅`);
     return { ok: true, account: data.account || data.user || { username } };
   } catch (err) {
@@ -147,9 +135,8 @@ export async function loginOrga(username, password) {
 }
 
 export function getOrgaRegistrationInfo() {
-  const now = Date.now();
-  orgaRegistrations = orgaRegistrations.filter(t => now - t < ORGA_REGISTER_WINDOW);
-  return { used: orgaRegistrations.length, limit: ORGA_REGISTER_LIMIT, windowMs: ORGA_REGISTER_WINDOW };
+  // Le rate-limiting est gérés par l'API externe
+  return { managed_by: 'external-api', note: 'L\'API externe gère les règles d\'inscription' };
 }
 
 function collectRoleValues(value, into) {

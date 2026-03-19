@@ -1,6 +1,8 @@
 # 🧭 Testor — Suivi de Course d'Orientation
 
-Application web temps réel pour le suivi de courses d'orientation. Elle permet aux **organisateurs** de gérer les courses et balises, aux **participants** de rejoindre une course via un code d'équipe, et aux **administrateurs** de superviser l'ensemble depuis une console dédiée.
+Application web temps réel pour le suivi de courses d'orientation. Permet aux **organisateurs** de superviser les courses, aux **participants** (runners) de rejoindre via code d'équipe et consulter la carte en direct, et aux **administrateurs** de superviser l'ensemble du système.
+
+**Architecture** : Frontend React + Backend Node.js/Express + API PostgreSQL externe.
 
 ---
 
@@ -9,310 +11,383 @@ Application web temps réel pour le suivi de courses d'orientation. Elle permet 
 - [Fonctionnalités](#-fonctionnalités)
 - [Architecture](#-architecture)
 - [Prérequis](#-prérequis)
-- [Installation](#-installation)
-- [Configuration](#-configuration)
+- [Installation & Configuration](#-installation--configuration)
 - [Lancement](#-lancement)
-- [Déploiement Docker](#-déploiement-docker)
+- [Déploiement](#-déploiement)
 - [API REST](#-api-rest)
 - [WebSocket](#-websocket)
-- [Structure du projet](#-structure-du-projet)
-- [Stack technique](#-stack-technique)
+- [Structure](#-structure-du-projet)
+- [Stack](#-stack-technique)
 
 ---
 
 ## ✨ Fonctionnalités
 
-### 👤 Participant (Runner)
-- Rejoindre une course en entrant un **code d'équipe**
-- Visualiser les balises sur une **carte Leaflet** interactive
-- Suivre sa progression (balises validées / restantes)
-- Voir l'ordre des checkpoints à atteindre
+### 🏃 Runner (Participant)
+- Rejoindre une course avec un **code d'équipe**
+- Carte Leaflet interactive avec balises en temps réel
+- Suivi de progression (checkpoints validés/restants)
+- Notification de passage aux balises (via GPS/beacon)
 
-### 🔴 Administrateur
-- Connexion via **username / mot de passe** (vérifié sur l'API externe)
-- Vue globale de toutes les courses, balises et équipes
-- **Logs serveur** en temps réel (mis à jour toutes les 3s)
-- Historique des événements de course
-- Système de **permissions granulaires** (accès courses, balises, équipes, état)
+### 🧭 Organisateur
+- Créer et superviser des courses via l'**API externe**
+- Démarrer/pause/reprendre/arrêter chronométrage
+- Gérer les équipes : pause/arrêt individuel
+- Enregistrer les passages aux balises
 
-### ⚡ Temps réel
-- **WebSocket** natif pour la diffusion instantanée des pings et événements
-- Détection automatique **online/offline**
-- Broadcast des beacon pings à tous les clients connectés
+### 👮 Administrateur
+- **Console admin** : logs serveur en direct (polling 3s)
+- Historique global des événements de course
+- Authentification via l'**API externe** avec permissions granulaires
+- Vue synthétique : courses, équipes, balises, pings
+
+### ⚡ Temps Réel
+- **WebSocket natif** pour diffusion instantanée (pings, events, logs)
+- Auto-refresh de l'état API externe (toutes les 30s)
+- Détection auto **online/offline** du client
+- Broadcast aux tous les clients connectés
 
 ---
 
 ## 🏗 Architecture
 
 ```
-┌──────────────┐       ┌──────────────────┐       ┌─────────────────────┐
-│   Frontend   │◄─────►│   Backend Node   │◄─────►│   API Externe       │
-│  React/Vite  │  HTTP │  Express + WS    │  HTTP │  (PostgreSQL BDD)   │
-│  port 5173   │  WS   │  port 8787       │       │  port 3000          │
-└──────────────┘       └──────────────────┘       └─────────────────────┘
+┌─────────────────────────┐
+│   Frontend (React/Vite) │
+│    :5173 / :5174        │
+└────────┬────────────────┘
+         │ HTTP/WS (proxy)
+         ↓
+┌─────────────────────────┐
+│  Backend (Express/Node) │
+│       :8787             │
+│  - API REST             │
+│  - WebSocket            │
+│  - Stockage mémoire     │
+└────────┬────────────────┘
+         │ HTTP (ApiKey)
+         ↓
+┌─────────────────────────┐
+│  API Externe (PostgreSQL)
+│  172.40.1.151:3000      │
+│  - Courses              │
+│  - Équipes              │
+│  - Balises              │
+│  - Codes                │
+│  - Auth (admin/orga)    │
+└─────────────────────────┘
 ```
 
-- **Frontend** : SPA React servie par Vite (dev) ou Express (production)
-- **Backend** : API REST Express + serveur WebSocket, stockage en mémoire (pings, logs, events)
-- **API externe** : API distante avec base PostgreSQL (courses, équipes, balises, codes, utilisateurs). Authentification par clé API (`Authorization: ApiKey <clé>`)
+**Composants :**
+- **Frontend** : SPA React, servie par Vite (dev) ou Express (prod)
+- **Backend** : Serveur Express avec WebSocket, stockage volatil (RAM)
+- **API externe** : Base PostgreSQL distante, authentifiée par clé API
 
 ---
 
 ## 📦 Prérequis
 
-- **Node.js** ≥ 20
-- **npm** ≥ 9
-- Accès réseau à l'**API externe** (par défaut `http://172.40.1.151:3000`)
-- *(Optionnel)* **Docker** + **Docker Compose** pour le déploiement
+- **Node.js** ≥ 20, **npm** ≥ 9
+- Accès réseau à l'API externe (`http://172.40.1.151:3000`)
+- *(Optionnel)* Docker + Docker Compose pour déploiement
 
 ---
 
-## 🚀 Installation
+## 🚀 Installation & Configuration
+
+### 1. Cloner & installer
 
 ```bash
-# Cloner le projet
-git clone <url-du-repo>
+git clone <url>
 cd testor
-
-# Installer les dépendances
 npm install
+```
 
-# Copier la configuration
+### 2. Configurer `.env`
+
+```bash
 cp .env.example .env
 ```
 
----
-
-## ⚙️ Configuration
-
-Éditer le fichier **`.env`** à la racine :
-
+**Fichier `.env` :**
 ```env
-# Port du serveur backend
 PORT=8787
-
-# URL de l'API externe (PostgreSQL)
 API_URL=http://172.40.1.151:3000
-
-# Clé API pour l'authentification auprès de l'API externe
-API_KEY=votre_cle_api_ici
+API_KEY=<votre_clé_api>
+CORS_ORIGINS=http://localhost:5173,http://localhost:5174
 ```
 
-| Variable       | Description                                    | Défaut                   |
-|----------------|------------------------------------------------|--------------------------|
-| `PORT`         | Port d'écoute du backend                       | `8787`                   |
-| `API_URL`      | URL de l'API externe (courses, équipes, codes) | —                        |
-| `API_KEY`      | Clé API pour authentifier les requêtes         | —                        |
-| `CORS_ORIGINS` | Origines CORS autorisées (séparées par `,`)    | *(toutes acceptées)*     |
+| Variable       | Description                          | Requis | Défaut |
+|----------------|--------------------------------------|--------|--------|
+| `PORT`         | Port backend                         | Non    | 8787   |
+| `API_URL`      | URL API externe                      | **Oui**| —      |
+| `API_KEY`      | Clé API pour l'authentification       | **Oui**| —      |
+| `CORS_ORIGINS` | Origines CORS autorisées (`,`-séparées) | Non | *(toutes)* |
 
 ---
 
 ## ▶️ Lancement
 
-### Mode développement
-
-Lance le backend Express **et** le serveur Vite simultanément :
+### Mode développement (recommandé)
 
 ```bash
 npm run dev
 ```
 
-- Frontend → [http://localhost:5173](http://localhost:5173)
-- Backend API → [http://localhost:8787](http://localhost:8787)
-- WebSocket → `ws://localhost:8787/ws`
+Lance **simultanément** :
+- Backend : `http://localhost:8787/api/...` + `ws://localhost:8787/ws`
+- Frontend : `http://localhost:5173` (ou `5174` si port occupé)
 
-### Commandes disponibles
+Le frontend proxie automatiquement les requêtes `/api/*` vers le backend.
 
-| Commande            | Description                                  |
-|---------------------|----------------------------------------------|
-| `npm run dev`       | Lance API + Vite en parallèle (dev)          |
-| `npm run api`       | Lance uniquement le serveur backend          |
-| `npm run dev:front` | Lance uniquement Vite (frontend)             |
-| `npm run build`     | Build de production du frontend              |
-| `npm run preview`   | Prévisualise le build de production          |
-| `npm run lint`      | Lint ESLint sur tout le projet               |
+### Backend seul
+
+```bash
+npm run api
+```
+
+Backend sur `http://localhost:8787`.
+
+### Frontend seul
+
+```bash
+npm run dev:front
+```
+
+Vite sur `http://localhost:5173` (requiert que le backend soit lancé séparément).
+
+### Scripts disponibles
+
+| Commande      | Description                    |
+|---------------|--------------------------------|
+| `npm run dev` | API + Vite (dev complet)       |
+| `npm run api` | Backend Express seul           |
+| `npm run dev:front` | Frontend Vite seul       |
+| `npm run build` | Build production frontend      |
+| `npm run preview` | Aperçu du build prod           |
+| `npm run lint` | ESLint sur tout le projet      |
 
 ---
 
-## 🐳 Déploiement Docker
+## 🐳 Déploiement
 
-Le projet inclut un **Dockerfile multi-stage** (build frontend + serveur production) et un `docker-compose.yml`.
+### Docker Compose
 
 ```bash
-# Lancer en production
+# Lancer (build + run)
 npm run docker:up
 
-# Voir les logs
+# Logs
 npm run docker:logs
 
 # Arrêter
 npm run docker:down
 
-# Reset complet (supprime les volumes)
+# Reset complet (volumes supprimés)
 npm run docker:reset
 ```
 
-L'application est exposée sur le **port 80** en production.
+**Configuration :** utilise `.env.docker` au lieu de `.env`.
 
-> La config Docker utilise `.env.docker` comme fichier d'environnement.
+**Port public :** 80
 
 ---
 
 ## 📡 API REST
 
-Toutes les routes sont préfixées par `/api`.
+Prefix : `/api`
 
-### Authentification
+### Auth
 
-| Méthode | Route             | Description                       |
-|---------|-------------------|-----------------------------------|
-| `POST`  | `/api/auth/admin` | Login admin (username + password) |
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `POST` | `/api/auth/admin` | Login admin (via API externe) |
+| `POST` | `/api/auth/login` | Login organisateur (via API externe) |
+| `POST` | `/api/auth/register` | Inscription organisateur (via API externe) |
+| `GET` | `/api/auth/register-info` | Info rate-limit inscription |
 
-**Body** : `{ "username": "...", "password": "..." }`
-
-**Réponse** : `{ "ok": true, "permissions": { ... } }`
-
-> Le login est vérifié via le endpoint `/api/auth/login` de l'API externe.
+**Tous les logins/registrations passent par l'API externe.** Aucun stockage local d'orga.
 
 ### Santé
 
-| Méthode | Route         | Description                     |
-|---------|---------------|---------------------------------|
-| `GET`   | `/api/health` | État du backend + connexion API |
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `GET` | `/api/health` | État backend + connexion API externe |
 
 ### Courses
 
-| Méthode | Route                   | Description                              |
-|---------|-------------------------|------------------------------------------|
-| `GET`   | `/api/courses`          | Liste des courses (depuis l'API externe) |
-| `GET`   | `/api/teams/code/:code` | Rejoindre une course par code d'équipe   |
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `GET` | `/api/courses` | Liste des courses (API externe) |
+| `GET` | `/api/teams/code/:code` | Rejoindre par code équipe |
 
-### Beacon Pings
+### Balises & pings
 
-| Méthode | Route                        | Description                       |
-|---------|------------------------------|-----------------------------------|
-| `POST`  | `/api/beacons/ping`          | Enregistrer un ping de balise     |
-| `GET`   | `/api/beacons/events`        | Derniers pings (tous les teams)   |
-| `GET`   | `/api/races/:raceId/beacons` | Snapshot des positions par course |
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `POST` | `/api/beacons/ping` | Enregistrer position équipe |
+| `GET` | `/api/beacons/events?limit=20` | Pings récents |
+| `GET` | `/api/races/:raceId/beacons` | Snapshot par course |
 
-**Body ping** :
+**Ping body :**
 ```json
 {
   "raceId": "1",
   "teamCode": "ALPHA1",
   "teamName": "Les Explorateurs",
-  "lat": 48.8566,
-  "lng": 2.3522,
-  "accuracy": 5,
-  "speedKmh": 8.2,
-  "heading": 180,
-  "battery": 85
+  "lat": 48.8566, "lng": 2.3522,
+  "accuracy": 5, "speedKmh": 8.2,
+  "heading": 180, "battery": 85
 }
 ```
 
-### Événements de course
+### Chronométrage (organisateurs)
 
-| Méthode | Route                        | Description                  |
-|---------|------------------------------|------------------------------|
-| `POST`  | `/api/races/:raceId/events`  | Créer un événement de course |
-| `GET`   | `/api/races/:raceId/history` | Historique d'une course      |
-| `GET`   | `/api/history`               | Historique global            |
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `POST` | `/api/orga/courses/:raceId/start` | Démarrer course |
+| `POST` | `/api/orga/courses/:raceId/pause` | Pause course |
+| `POST` | `/api/orga/courses/:raceId/resume` | Reprendre |
+| `POST` | `/api/orga/courses/:raceId/stop` | Arrêter course |
+| `GET` | `/api/orga/courses/:raceId/chrono` | État chrono |
+| `POST` | `/api/orga/courses/:raceId/teams/:code/pause` | Pause équipe |
+| `POST` | `/api/orga/courses/:raceId/teams/:code/resume` | Reprendre équipe |
+| `POST` | `/api/orga/courses/:raceId/teams/:code/stop` | Arrêter équipe |
+| `POST` | `/api/orga/courses/:raceId/teams/:code/checkpoint` | Valider passage |
+| `GET` | `/api/orga/chronos` | Tous les chronos |
 
-### Logs serveur
+### Événements & historique
 
-| Méthode | Route       | Description         |
-|---------|-------------|---------------------|
-| `GET`   | `/api/logs` | Derniers logs       |
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `POST` | `/api/races/:raceId/events` | Créer événement |
+| `GET` | `/api/races/:raceId/history?limit=50` | Historique course |
+| `GET` | `/api/history?limit=50` | Historique global |
+
+### Logs (admin)
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `GET` | `/api/logs?limit=80` | Logs serveur récents |
+
+### Gestion comptes orga (admin)
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| `GET` | `/api/admin/organisateurs` | Liste organisateurs |
+| `DELETE` | `/api/admin/organisateurs/:id` | Supprimer orga |
+| `PATCH` | `/api/admin/organisateurs/:id/password` | Changer MdP orga |
+
+**Note :** Tous les comptes orga sont gérés par l'API externe. Aucun stockage local.
 
 ### Rate limiting
 
-- Routes API générales : **120 requêtes / minute**
-- Route d'authentification : **10 tentatives / 15 minutes**
+- API générale : **120 req/min**
+- Auth : **10 tentatives / 15 min**
 
 ---
 
 ## 🔌 WebSocket
 
-Connexion sur `ws://localhost:8787/ws`.
+**Endpoint :** `ws://localhost:8787/ws`
 
-### Messages reçus
+### Messages serveur → client
 
-| Type          | Description                      | Payload            |
-|---------------|----------------------------------|--------------------|
-| `connected`   | Confirmation de connexion        | `{ ok: true }`     |
-| `beacon_ping` | Nouveau ping d'une balise/équipe | Objet ping complet |
-| `race_event`  | Événement de course              | Objet event        |
-| `log`         | Nouveau log serveur              | Objet log          |
+| Type | Description | Payload |
+|------|-------------|---------|
+| `connected` | Connexion établie | `{ok: true}` |
+| `beacon_ping` | Nouveau ping équipe | Objet ping complet |
+| `race_started`, `race_paused`, etc. | Événement course | `{raceId, timestamp}` |
+| `log` | Nouveau log serveur | Objet log |
+| `checkpoint_reached` | Passage à une balise | `{raceId, teamCode, checkpointIndex}` |
+
+Tous les messages incluent `timestamp`.
 
 ---
 
-## 📁 Structure du projet
+## 📁 Structure du Projet
 
 ```
 testor/
-├── .env                    # Configuration locale
-├── .env.docker             # Configuration Docker
-├── .env.example            # Template de configuration
-├── docker-compose.yml      # Orchestration Docker
-├── Dockerfile              # Build multi-stage (frontend + backend)
-├── package.json            # Dépendances et scripts
-├── vite.config.js          # Config Vite (proxy dev → backend)
-├── eslint.config.js        # Config ESLint
-├── index.html              # Point d'entrée HTML
+├── .env, .env.example, .env.docker
+├── package.json, package-lock.json
+├── vite.config.js              # Proxy Vite → backend
+├── eslint.config.js
+├── docker-compose.yml, Dockerfile
 │
-├── server/                 # ── Backend Node.js ──
-│   ├── index.js            # Serveur Express + WebSocket + routes API
-│   └── db.js               # Stockage mémoire + connexion API externe
+├── server/
+│   ├── index.js                # Serveur Express + WebSocket
+│   │                             # Routes API REST
+│   │                             # Proxy frontend (prod)
+│   └── db.js                   # Logique métier
+│                               # Stockage mémoire (pings, logs, events)
+│                               # Appels API externe
 │
-├── src/                    # ── Frontend React ──
-│   ├── main.jsx            # Point d'entrée React
-│   ├── App.jsx             # Composant racine (routing, état global)
-│   ├── App.css             # Styles globaux
-│   ├── api.js              # Fonctions fetch vers le backend
+├── src/
+│   ├── main.jsx                # Bootstrap React
+│   ├── App.jsx                 # Routing & état global
+│   ├── App.css, index.css       # Styles
+│   ├── api.js                  # Fetch vers backend
 │   │
 │   ├── components/
-│   │   ├── LoginPage.jsx       # Page de connexion (admin + code équipe)
-│   │   ├── AdminPanel.jsx      # Console admin (courses, logs, historique)
-│   │   ├── RunnerPanel.jsx     # Vue participant (carte, progression)
-│   │   ├── OrgaPanel.jsx       # Vue organisateur (stats, simulation)
-│   │   ├── VueBeaconMap.jsx    # Carte des balises temps réel
-│   │   └── ui/
-│   │       ├── StatCard.jsx        # Carte de statistique
-│   │       ├── ChartCard.jsx       # Conteneur de graphique
-│   │       ├── MiniLineChart.jsx   # Mini graphique en ligne
-│   │       └── NumberedMarker.jsx  # Marqueur numéroté sur la carte
+│   │   ├── LoginPage.jsx       # Page auth
+│   │   ├── AdminPanel.jsx      # Console admin
+│   │   ├── OrgaPanel.jsx       # Espace organisateur
+│   │   ├── RunnerPanel.jsx     # Vue participant
+│   │   ├── VueBeaconMap.jsx    # Carte temps réel
+│   │   └── ui/                 # Composants réutilisables
+│   │       ├── StatCard.jsx
+│   │       ├── ChartCard.jsx
+│   │       ├── MiniLineChart.jsx
+│   │       └── NumberedMarker.jsx
 │   │
 │   ├── hooks/
-│   │   └── useWebSocket.js     # Hook React pour la connexion WebSocket
+│   │   └── useWebSocket.js     # Hook WebSocket
 │   │
 │   └── utils/
-│       ├── helpers.js          # Utilitaires (clamp, sanitize, normalizeCode)
-│       └── geo.js              # Calculs géographiques (haversine, bearing)
+│       ├── helpers.js
+│       └── geo.js
 │
-└── public/                 # Fichiers statiques
+├── public/                      # Statiques
+└── dist/                        # Build prod (généré)
 ```
 
 ---
 
-## 🛠 Stack technique
+## 🛠 Stack Technique
 
-| Couche      | Technologie                                      |
-|-------------|--------------------------------------------------|
-| Frontend    | React 19, Vite 7, Leaflet, React-Leaflet         |
-| UI          | CSS custom (variables, responsive), Lucide icons  |
-| Backend     | Node.js 20, Express 5, WebSocket (ws)             |
-| Auth        | Clé API (`Authorization: ApiKey`) + login JWT     |
-| Stockage    | En mémoire (pings, logs, events) — éphémère      |
-| API externe | PostgreSQL via API REST distante                  |
-| Build       | Vite (dev + production)                           |
-| Déploiement | Docker multi-stage, Docker Compose                |
-| Linting     | ESLint 9                                          |
+| Aspect | Tech |
+|--------|------|
+| **Frontend** | React 19, Vite 7, Leaflet, React-Leaflet |
+| **UI** | CSS custom, Lucide Icons |
+| **Backend** | Node.js, Express 5, WebSocket (ws) |
+| **Auth** | ApiKey + JWT (de l'API externe) |
+| **Stockage** | RAM éphémère (pings, logs, events) |
+| **BDD** | PostgreSQL (API externe en lecture) |
+| **Build** | Vite (frontend) |
+| **Deploy** | Docker + Docker Compose |
+| **Lint** | ESLint 9 |
 
 ---
 
-## 📝 Notes
+## 📝 Notes Importantes
 
-- Les **pings, logs et événements** sont stockés en mémoire RAM côté backend. Ils sont perdus au redémarrage du serveur (max 5 000 pings, 1 000 logs, 500 events).
-- Les **courses, équipes, balises et codes** sont lus depuis l'**API externe** PostgreSQL en lecture seule.
-- Le proxy Vite (en dev) redirige `/api/*` et `/ws` vers le backend sur le port 8787.
-- En production (Docker), Express sert directement le build frontend (`dist/`) + l'API sur le même port.
+- **Données volatiles** : pings, logs, events sont en RAM. Perdus au redémarrage (limites : 5k pings, 1k logs, 500 events).
+- **100% API externe** : courses, équipes, balises, codes, tous les logins → API PostgreSQL externe.
+- **Aucun compte local** : les organisateurs et admins sont authentifiés via l'API externe uniquement.
+- **Auto-refresh API** : le backend vérifie la disponibilité de l'API externe toutes les 30s et log les changements d'état.
+- **Proxy Vite (dev)** : redirige `/api/*` et `/ws` vers `localhost:8787`.
+- **Prod** : Express sert le build frontend (`dist/`) + l'API sur un unique port.
+
+---
+
+## 📞 Support
+
+Pour toute question ou bug, consultez les logs backend :
+
+```bash
+# Voir les logs en direct
+tail -f logs.txt   # si fichier de log
+# ou directement dans le terminal lors du lancement
+npm run api
+```
