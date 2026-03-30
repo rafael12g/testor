@@ -101,30 +101,38 @@ app.use(express.json());
 
 const apiLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false });
 const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, standardHeaders: true, legacyHeaders: false, message: { ok: false, error: 'Trop de tentatives' } });
+const orgaRegisterLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, message: { ok: false, error: 'Trop de tentatives d\'inscription' } });
 app.use('/api', apiLimiter);
+
+// ─── helpers HOF ───
+
+const api_req = (fn, res_fn) => async (req, res) => {
+  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  try {
+    const result = await fn(req);
+    const r = res_fn ? res_fn(result) : result;
+    return res.status(r.status || 200).json(r.data || r);
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || 'Erreur serveur' });
+  }
+};
 
 // ─── routes ───
 
-app.post('/api/auth/admin', authLimiter, async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
-  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
-  try {
-    const result = await loginViaApi(username, password);
-    if (!result.ok) return res.status(401).json({ ok: false, error: result.error || 'Identifiants incorrects' });
-    return res.json({ ok: true, permissions: result.permissions || null, account: result.account || null });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Erreur de connexion à l\'API' });
-  }
-});
+app.post('/api/auth/admin', authLimiter, api_req(
+  async req => {
+    const { username, password } = req.body || {};
+    if (!username || !password) throw new Error('Nom d\'utilisateur et mot de passe requis');
+    return await loginViaApi(username, password);
+  },
+  result => ({ status: result.ok ? 200 : 401, data: { ok: result.ok, permissions: result.permissions || null, account: result.account || null, error: result.error || 'Identifiants incorrects' } })
+));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'testor-api', apiConnected: isApiAvailable(), now: Date.now() });
 });
 
-// --- Organisateur : inscription (max 3/h) ---
-
-const orgaRegisterLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, message: { ok: false, error: 'Trop de tentatives d\'inscription' } });
+// --- Organisateur : inscription et connexion ---
 
 app.post('/api/auth/register', orgaRegisterLimiter, async (req, res) => {
   const { username, password } = req.body || {};
@@ -141,11 +149,7 @@ app.post('/api/auth/register', orgaRegisterLimiter, async (req, res) => {
   }
 });
 
-app.get('/api/auth/register-info', (_req, res) => {
-  res.json({ ok: true, ...getOrgaRegistrationInfo() });
-});
-
-// --- Organisateur : connexion ---
+app.get('/api/auth/register-info', (_req, res) => res.json({ ok: true, ...getOrgaRegistrationInfo() }));
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
@@ -161,146 +165,81 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   }
 });
 
-// --- Admin : gestion comptes organisateurs via API externe ---
+// --- Admin : gestion comptes organisateurs ---
 
-app.get('/api/admin/organisateurs', async (_req, res) => {
-  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
-  try {
-    const items = await listOrgaAccountsApi();
-    return res.json({ ok: true, items, count: items.length });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: err?.message || 'Erreur lecture comptes organisateurs' });
-  }
-});
+app.get('/api/admin/organisateurs', api_req(
+  async () => await listOrgaAccountsApi(),
+  result => ({ data: { ok: true, items: result, count: result.length } })
+));
 
-app.delete('/api/admin/organisateurs/:identifier', async (req, res) => {
-  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
-  const identifier = String(req.params.identifier || '').trim();
-  if (!identifier) return res.status(400).json({ ok: false, error: 'Identifiant requis' });
-  try {
+app.delete('/api/admin/organisateurs/:identifier', api_req(
+  async req => {
+    const identifier = String(req.params.identifier || '').trim();
+    if (!identifier) throw new Error('Identifiant requis');
     const result = await deleteOrgaAccountApi(identifier);
-    if (!result.ok) return res.status(400).json(result);
+    if (!result.ok) return result;
     await log('warn', `Compte orga supprimé: ${identifier}`, { identifier });
-    return res.json({ ok: true });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: err?.message || 'Erreur suppression compte organisateur' });
+    return { ok: true };
   }
-});
+));
 
-app.patch('/api/admin/organisateurs/:identifier/password', async (req, res) => {
-  if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
-  const identifier = String(req.params.identifier || '').trim();
-  const newPassword = String(req.body?.password || '').trim();
-  if (!identifier) return res.status(400).json({ ok: false, error: 'Identifiant requis' });
-  if (!newPassword) return res.status(400).json({ ok: false, error: 'Nouveau mot de passe requis' });
-  try {
+app.patch('/api/admin/organisateurs/:identifier/password', api_req(
+  async req => {
+    const identifier = String(req.params.identifier || '').trim();
+    const newPassword = String(req.body?.password || '').trim();
+    if (!identifier || !newPassword) throw new Error('Identifiant et mot de passe requis');
     const result = await updateOrgaPasswordApi(identifier, newPassword);
-    if (!result.ok) return res.status(400).json(result);
+    if (!result.ok) return result;
     await log('warn', `Mot de passe orga modifié: ${identifier}`, { identifier });
-    return res.json({ ok: true });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: err?.message || 'Erreur modification mot de passe' });
+    return { ok: true };
   }
-});
+));
 
-// --- Organisateur : démarrer une course (chrono) ---
+// --- Organisateur : chrono course (start/pause/resume/stop) ---
 
-app.post('/api/orga/courses/:raceId/start', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
-  try {
-    const chrono = startRaceChrono(raceId);
-    await insertRaceEvent(raceId, 'race_started', { startedAt: chrono.startedAt });
-    await log('info', `Course ${raceId} démarrée par un orga`, { raceId });
-    broadcast('race_started', { raceId, startedAt: chrono.startedAt });
-    return res.json({ ok: true, chrono });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
-  }
-});
+const raceChronoRoute = (method, eventType, fn) => {
+  app.post(`/api/orga/courses/:raceId/${method}`, async (req, res) => {
+    const raceId = String(req.params.raceId || '').trim();
+    if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
+    try {
+      const chrono = fn(raceId);
+      if (!chrono && method !== 'start') return res.status(404).json({ ok: false, error: 'Course non trouvée' });
+      if (eventType) await insertRaceEvent(raceId, eventType, { elapsed: chrono?.elapsed, startedAt: chrono?.startedAt });
+      if (eventType) broadcast(eventType, { raceId, ...chrono, startedAt: chrono?.startedAt });
+      await log('info', `Course ${raceId} ${method}`, { raceId });
+      return res.json({ ok: true, chrono });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+    }
+  });
+};
 
-// --- Organisateur : pause chrono course ---
+raceChronoRoute('start', 'race_started', startRaceChrono);
+raceChronoRoute('pause', 'race_paused', pauseRaceChrono);
+raceChronoRoute('resume', 'race_resumed', resumeRaceChrono);
+raceChronoRoute('stop', 'race_stopped', stopRaceChrono);
 
-app.post('/api/orga/courses/:raceId/pause', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
-  try {
-    const chrono = pauseRaceChrono(raceId);
-    if (!chrono) return res.status(404).json({ ok: false, error: 'Course non trouvée' });
-    await insertRaceEvent(raceId, 'race_paused', { elapsed: chrono.elapsed });
-    await log('info', `Course ${raceId} mise en pause`, { raceId });
-    broadcast('race_paused', { raceId, elapsed: chrono.elapsed });
-    return res.json({ ok: true, chrono });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
-  }
-});
+// --- Organisateur : chrono équipe (pause/resume/stop) ---
 
-// --- Organisateur : reprendre chrono course ---
+const teamChronoRoute = (method, eventType, fn) => {
+  app.post(`/api/orga/courses/:raceId/teams/:teamCode/${method}`, async (req, res) => {
+    const raceId = String(req.params.raceId || '').trim();
+    const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
+    try {
+      const tc = fn(raceId, teamCode);
+      if (!tc) return res.status(404).json({ ok: false, error: 'Équipe ou course non trouvée' });
+      await insertRaceEvent(raceId, eventType, { teamCode, elapsed: tc.elapsed });
+      broadcast(eventType, { raceId, teamCode, elapsed: tc.elapsed });
+      return res.json({ ok: true, teamChrono: tc });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: 'Erreur serveur' });
+    }
+  });
+};
 
-app.post('/api/orga/courses/:raceId/resume', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
-  try {
-    const chrono = resumeRaceChrono(raceId);
-    if (!chrono) return res.status(404).json({ ok: false, error: 'Course non trouvée ou pas en pause' });
-    await insertRaceEvent(raceId, 'race_resumed', { elapsed: chrono.elapsed });
-    await log('info', `Course ${raceId} reprise`, { raceId });
-    broadcast('race_resumed', { raceId });
-    return res.json({ ok: true, chrono });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
-  }
-});
-
-// --- Organisateur : arrêter chrono course ---
-
-app.post('/api/orga/courses/:raceId/stop', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  if (!raceId) return res.status(400).json({ ok: false, error: 'raceId requis' });
-  try {
-    const chrono = stopRaceChrono(raceId);
-    if (!chrono) return res.status(404).json({ ok: false, error: 'Course non trouvée' });
-    await insertRaceEvent(raceId, 'race_stopped', { elapsed: chrono.elapsed });
-    await log('info', `Course ${raceId} arrêtée`, { raceId, elapsed: chrono.elapsed });
-    broadcast('race_stopped', { raceId, elapsed: chrono.elapsed });
-    return res.json({ ok: true, chrono });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: 'Erreur serveur' });
-  }
-});
-
-// --- Organisateur : pause/resume/stop chrono d'une équipe ---
-
-app.post('/api/orga/courses/:raceId/teams/:teamCode/pause', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
-  const tc = pauseTeamChrono(raceId, teamCode);
-  if (!tc) return res.status(404).json({ ok: false, error: 'Équipe ou course non trouvée' });
-  await insertRaceEvent(raceId, 'team_paused', { teamCode, elapsed: tc.elapsed });
-  broadcast('team_paused', { raceId, teamCode });
-  return res.json({ ok: true, teamChrono: tc });
-});
-
-app.post('/api/orga/courses/:raceId/teams/:teamCode/resume', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
-  const tc = resumeTeamChrono(raceId, teamCode);
-  if (!tc) return res.status(404).json({ ok: false, error: 'Équipe non en pause ou course non en cours' });
-  await insertRaceEvent(raceId, 'team_resumed', { teamCode });
-  broadcast('team_resumed', { raceId, teamCode });
-  return res.json({ ok: true, teamChrono: tc });
-});
-
-app.post('/api/orga/courses/:raceId/teams/:teamCode/stop', async (req, res) => {
-  const raceId = String(req.params.raceId || '').trim();
-  const teamCode = String(req.params.teamCode || '').trim().toUpperCase();
-  const tc = stopTeamChrono(raceId, teamCode);
-  if (!tc) return res.status(404).json({ ok: false, error: 'Équipe ou course non trouvée' });
-  await insertRaceEvent(raceId, 'team_stopped', { teamCode, elapsed: tc.elapsed });
-  broadcast('team_stopped', { raceId, teamCode, elapsed: tc.elapsed });
-  return res.json({ ok: true, teamChrono: tc });
-});
+teamChronoRoute('pause', 'team_paused', pauseTeamChrono);
+teamChronoRoute('resume', 'team_resumed', resumeTeamChrono);
+teamChronoRoute('stop', 'team_stopped', stopTeamChrono);
 
 // --- Organisateur : état du chrono d'une course ---
 
@@ -427,7 +366,7 @@ app.get('/api/history', async (req, res) => {
   res.json({ ok: true, items, count: items.length });
 });
 
-// --- Courses (lecture seule depuis PostgreSQL) ---
+// --- Courses et équipes (lecture seule) ---
 
 app.get('/api/courses', async (_req, res) => {
   if (!isApiAvailable()) return res.json({ ok: true, items: [], count: 0 });
