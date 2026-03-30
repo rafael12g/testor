@@ -1,289 +1,59 @@
 const BASE_URL = '/api';
 
-/** Helper : fetch with timeout + graceful network error handling */
 async function safeFetch(url, options = {}, { timeout = 8000, fallback = null } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(timer);
-    return res;
+    return clearTimeout(timer), res;
   } catch (err) {
     clearTimeout(timer);
-    if (err.name === 'AbortError') {
-      console.warn(`[api] Timeout sur ${url}`);
-    } else {
-      console.warn(`[api] Réseau indisponible (${err.message}) — ${url}`);
-    }
-    if (fallback !== null) return null;   // caller handles null
+    console.warn(`[api] ${err.name === 'AbortError' ? 'Timeout' : 'Network error'} — ${url}`);
+    if (fallback !== null) return null;
     throw err;
   }
 }
 
-export async function sendBeaconPing(payload) {
-  const response = await safeFetch(`${BASE_URL}/beacons/ping`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response || !response.ok) {
-    console.warn('[api] Impossible d\u2019enregistrer le ping balise');
-    return { ok: false };
-  }
-
-  return response.json();
-}
-
-export async function fetchBeaconSnapshot(raceId) {
+const jsonFetch = async (method, url, data = null, fallback = null) => {
   try {
-    const response = await safeFetch(`${BASE_URL}/races/${raceId}/beacons`, {}, { fallback: [] });
-    if (!response || !response.ok) return [];
-    const data = await response.json();
-    return Array.isArray(data.items) ? data.items : [];
-  } catch { return []; }
-}
+    const res = await safeFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: data ? JSON.stringify(data) : undefined }, { fallback });
+    if (!res || !res.ok) return fallback !== null ? fallback : { ok: false, error: res ? await res.json().then(d => d.error).catch(() => 'Error') : 'Backend unavailable' };
+    return await res.json();
+  } catch { return fallback !== null ? fallback : { ok: false, error: 'Network error' }; }
+};
 
-export async function fetchRecentBeaconEvents(limit = 12) {
-  try {
-    const response = await safeFetch(`${BASE_URL}/beacons/events?limit=${limit}`, {}, { fallback: [] });
-    if (!response || !response.ok) return [];
-    const data = await response.json();
-    return Array.isArray(data.items) ? data.items : [];
-  } catch { return []; }
-}
+const apiGet = (url, fallback = null) => jsonFetch('GET', url, null, fallback);
+const apiPost = (url, data, fallback = null) => jsonFetch('POST', url, data, fallback);
+const apiPatch = (url, data) => jsonFetch('PATCH', url, data, { ok: false });
+const apiDelete = (url) => jsonFetch('DELETE', url, null, { ok: false });
 
-export async function fetchServerLogs(limit = 60) {
-  try {
-    const response = await safeFetch(`${BASE_URL}/logs?limit=${limit}`, {}, { fallback: [] });
-    if (!response || !response.ok) return [];
-    const data = await response.json();
-    return Array.isArray(data.items) ? data.items : [];
-  } catch { return []; }
-}
+export const sendBeaconPing = data => jsonFetch('POST', `${BASE_URL}/beacons/ping`, data, { ok: false });
+export const fetchBeaconSnapshot = raceId => apiGet(`${BASE_URL}/races/${raceId}/beacons`, []).then(d => Array.isArray(d.items) ? d.items : []);
+export const fetchRecentBeaconEvents = limit => apiGet(`${BASE_URL}/beacons/events?limit=${limit}`, []).then(d => Array.isArray(d.items) ? d.items : []);
+export const fetchServerLogs = limit => apiGet(`${BASE_URL}/logs?limit=${limit}`, []).then(d => Array.isArray(d.items) ? d.items : []);
+export const sendRaceEvent = (raceId, eventType, payload) => jsonFetch('POST', `${BASE_URL}/races/${raceId}/events`, { eventType, payload }, null);
+export const fetchRaceHistory = (raceId, limit = 40) => apiGet(raceId ? `${BASE_URL}/races/${raceId}/history?limit=${limit}` : `${BASE_URL}/history?limit=${limit}`, []).then(d => Array.isArray(d.items) ? d.items : []);
+export const pingBackendHealth = async () => { const r = await apiGet(`${BASE_URL}/health`); if (!r.ok) throw new Error('Backend unavailable'); return r; };
+export const loginAdmin = (u, p) => jsonFetch('POST', `${BASE_URL}/auth/admin`, { username: u, password: p });
+export const loginOrga = (u, p) => jsonFetch('POST', `${BASE_URL}/auth/login`, { username: u, password: p });
+export const registerOrga = (u, p) => jsonFetch('POST', `${BASE_URL}/auth/register`, { username: u, password: p });
+export const fetchOrgaRegisterInfo = () => apiGet(`${BASE_URL}/auth/register-info`, null);
+export const fetchOrgaAccounts = () => apiGet(`${BASE_URL}/admin/organisateurs`, []).then(d => Array.isArray(d.items) ? d.items : []);
+export const deleteOrgaAccount = id => apiDelete(`${BASE_URL}/admin/organisateurs/${encodeURIComponent(String(id || '').trim())}`);
+export const updateOrgaPassword = (id, pwd) => apiPatch(`${BASE_URL}/admin/organisateurs/${encodeURIComponent(String(id || '').trim())}`, { password: pwd });
 
-export async function sendRaceEvent(raceId, eventType, payload = null) {
-  try {
-    const response = await safeFetch(`${BASE_URL}/races/${raceId}/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ eventType, payload }),
-    });
-    if (!response || !response.ok) return null;
-    return response.json();
-  } catch { return null; }
-}
+const postRace = (endpoint, raceId) => jsonFetch('POST', `${BASE_URL}/orga/courses/${raceId}/${endpoint}`, {});
+export const startRace = raceId => postRace('start', raceId);
+export const pauseRace = raceId => postRace('pause', raceId);
+export const resumeRace = raceId => postRace('resume', raceId);
+export const stopRace = raceId => postRace('stop', raceId);
 
-export async function fetchRaceHistory(raceId, limit = 40) {
-  try {
-    const url = raceId
-      ? `${BASE_URL}/races/${raceId}/history?limit=${limit}`
-      : `${BASE_URL}/history?limit=${limit}`;
-    const response = await safeFetch(url, {}, { fallback: [] });
-    if (!response || !response.ok) return [];
-    const data = await response.json();
-    return Array.isArray(data.items) ? data.items : [];
-  } catch { return []; }
-}
+const postTeam = (endpoint, raceId, teamCode) => jsonFetch('POST', `${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/${endpoint}`, {});
+export const pauseTeam = (raceId, teamCode) => postTeam('pause', raceId, teamCode);
+export const resumeTeam = (raceId, teamCode) => postTeam('resume', raceId, teamCode);
+export const stopTeam = (raceId, teamCode) => postTeam('stop', raceId, teamCode);
 
-export async function pingBackendHealth() {
-  const response = await safeFetch(`${BASE_URL}/health`, {}, { timeout: 3000 });
-  if (!response || !response.ok) throw new Error('Backend indisponible');
-  return response.json();
-}
+export const fetchRaceChrono = raceId => apiGet(`${BASE_URL}/orga/courses/${raceId}/chrono`, null).then(d => d?.chrono || null);
+export const recordCheckpoint = (raceId, teamCode, checkpointIndex) => jsonFetch('POST', `${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/checkpoint`, { checkpointIndex }, { ok: false });
+export const fetchAllChronos = () => apiGet(`${BASE_URL}/orga/chronos`, null).then(d => d?.chronos || {});
 
-export async function loginAdmin(username, password) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/auth/admin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res) return { ok: false, error: 'Backend indisponible' };
-    const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.error || 'Identifiants incorrects' };
-    return data;
-  } catch { return { ok: false, error: 'Erreur réseau' }; }
-}
-
-// ─── Organisateur ───
-
-export async function registerOrga(username, password) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res) return { ok: false, error: 'Backend indisponible' };
-    const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.error || 'Erreur inscription' };
-    return data;
-  } catch { return { ok: false, error: 'Erreur réseau' }; }
-}
-
-export async function loginOrga(username, password) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res) return { ok: false, error: 'Backend indisponible' };
-    const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.error || 'Identifiants incorrects' };
-    return data;
-  } catch { return { ok: false, error: 'Erreur réseau' }; }
-}
-
-export async function fetchOrgaRegisterInfo() {
-  try {
-    const res = await safeFetch(`${BASE_URL}/auth/register-info`, {}, { fallback: null });
-    if (!res || !res.ok) return null;
-    return res.json();
-  } catch { return null; }
-}
-
-export async function fetchOrgaAccounts() {
-  try {
-    const res = await safeFetch(`${BASE_URL}/admin/organisateurs`, {}, { fallback: [] });
-    if (!res || !res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data.items) ? data.items : [];
-  } catch { return []; }
-}
-
-export async function deleteOrgaAccount(identifier) {
-  try {
-    const id = encodeURIComponent(String(identifier || '').trim());
-    if (!id) return { ok: false, error: 'Identifiant manquant' };
-    const res = await safeFetch(`${BASE_URL}/admin/organisateurs/${id}`, { method: 'DELETE' });
-    if (!res) return { ok: false, error: 'Backend indisponible' };
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: data.error || 'Suppression impossible' };
-    return { ok: true };
-  } catch { return { ok: false, error: 'Erreur réseau' }; }
-}
-
-export async function updateOrgaPassword(identifier, password) {
-  try {
-    const id = encodeURIComponent(String(identifier || '').trim());
-    if (!id) return { ok: false, error: 'Identifiant manquant' };
-    const res = await safeFetch(`${BASE_URL}/admin/organisateurs/${id}/password`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    if (!res) return { ok: false, error: 'Backend indisponible' };
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: data.error || 'Modification impossible' };
-    return { ok: true };
-  } catch { return { ok: false, error: 'Erreur réseau' }; }
-}
-
-export async function startRace(raceId) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false, error: 'Erreur démarrage course' };
-    return res.json();
-  } catch { return { ok: false, error: 'Erreur réseau' }; }
-}
-
-export async function pauseRace(raceId) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/pause`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function resumeRace(raceId) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/resume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function stopRace(raceId) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function pauseTeam(raceId, teamCode) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/pause`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function resumeTeam(raceId, teamCode) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/resume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function stopTeam(raceId, teamCode) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function fetchRaceChrono(raceId) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/chrono`, {}, { fallback: null });
-    if (!res || !res.ok) return null;
-    const data = await res.json();
-    return data.chrono || null;
-  } catch { return null; }
-}
-
-export async function recordCheckpoint(raceId, teamCode, checkpointIndex) {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/courses/${raceId}/teams/${teamCode}/checkpoint`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ checkpointIndex }),
-    });
-    if (!res || !res.ok) return { ok: false };
-    return res.json();
-  } catch { return { ok: false }; }
-}
-
-export async function fetchAllChronos() {
-  try {
-    const res = await safeFetch(`${BASE_URL}/orga/chronos`, {}, { fallback: null });
-    if (!res || !res.ok) return {};
-    const data = await res.json();
-    return data.chronos || {};
-  } catch { return {}; }
-}
