@@ -23,7 +23,7 @@ export default function RunnerPanel({ runnerSession, races, runnerProgress, runn
         <div className="card-header">
           <div>
             <h2 className="card-title">Tableau Participant</h2>
-            <p className="muted">Course: {race?.name || '—'} · Équipe {runnerSession?.teamName || '—'}</p>
+            <p className="muted">Course: {race?.name || runnerSession?.raceName || '—'} · Équipe {runnerSession?.teamName || '—'}</p>
           </div>
           <span className="pill">Code {runnerSession?.code || '—'}</span>
         </div>

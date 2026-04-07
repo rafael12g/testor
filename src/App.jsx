@@ -6,7 +6,7 @@ import AdminPanel from './components/AdminPanel';
 import RunnerPanel from './components/RunnerPanel';
 import OrgaPanel from './components/OrgaPanel';
 import { DEFAULT_START, clamp, normalizeCode } from './utils/helpers';
-import { fetchServerLogs, fetchRaceHistory } from './api';
+import { fetchServerLogs, fetchRaceHistory, fetchCourses, fetchTeamByCode, setSessionToken } from './api';
 
 export default function OrienteeringApp() {
   const [user, setUser] = useState(null);
@@ -21,17 +21,18 @@ export default function OrienteeringApp() {
 
   // ── Charger les courses depuis PostgreSQL (lecture seule) ──
   useEffect(() => {
-    const fetchCourses = async () => {
+    if (user?.role !== 'admin' && user?.role !== 'orga') { setRaces([]); return; }
+    const loadCourses = async () => {
       try {
-        const res = await fetch('/api/courses');
-        const data = await res.json();
-        if (data.ok && Array.isArray(data.items)) setRaces(data.items);
-      } catch { /* serveur non disponible */ }
+        setRaces(await fetchCourses());
+      } catch {
+        setRaces([]);
+      }
     };
-    fetchCourses();
-    const interval = setInterval(fetchCourses, 15000);
+    loadCourses();
+    const interval = setInterval(loadCourses, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [user]);
 
   // ── Online / Offline ──
   useEffect(() => {
@@ -67,13 +68,16 @@ export default function OrienteeringApp() {
     const code = normalizeCode(codeInput);
     if (!code) return alert('Entre un code équipe.');
     try {
-      const res = await fetch(`/api/teams/code/${code}`);
-      const data = await res.json();
-      if (!data.ok || !data.team) return alert(data.error || 'Code introuvable ou course inactive.');
-      const { team, course } = data;
+      const data = await fetchTeamByCode(code);
+      const payload = data?.data || data;
+      const hasTeamAndCourse = !!(payload?.team && payload?.course);
+      const explicitlyFailed = payload?.ok === false;
+      if (!hasTeamAndCourse || explicitlyFailed) return alert(payload?.error || 'Code introuvable ou course inactive.');
+      const { team, course } = payload;
       setUser({ role: 'runner', name: team.name });
       setRunnerSession({
         raceId: course.id,
+        raceName: course.name,
         teamName: team.name,
         code: team.code,
         order: course.checkpoints || [],
@@ -86,7 +90,7 @@ export default function OrienteeringApp() {
     }
   };
 
-  const logout = () => { setUser(null); setRunnerSession(null); setRunnerProgress(0); setRunnerLegProgress(0); };
+  const logout = () => { setSessionToken(null); setUser(null); setRunnerSession(null); setRunnerProgress(0); setRunnerLegProgress(0); };
 
   if (!user) return <LoginPage onLogin={setUser} onRunnerJoin={joinByCode} />;
 
