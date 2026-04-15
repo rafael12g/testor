@@ -482,8 +482,19 @@ const distDir = path.resolve(__dirname2, '..', 'dist');
 // Serve built assets (JS, CSS, images…)
 app.use(express.static(distDir));
 
+// Ne pas mettre en cache index.html pour éviter de servir une ancienne version du frontend.
+app.get('/', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.sendFile(path.join(distDir, 'index.html'));
+});
+
 // SPA fallback: any non-API GET → index.html
 app.get('/{*path}', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
