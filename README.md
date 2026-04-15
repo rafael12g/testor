@@ -69,7 +69,7 @@ Application web temps réel pour le suivi de courses d'orientation. Permet aux *
          ↓
 ┌─────────────────────────┐
 │  API Externe (PostgreSQL)
-│  172.40.1.151:3000      │
+│  172.40.10.150:3000      │
 │  - Courses              │
 │  - Équipes              │
 │  - Balises              │
@@ -88,7 +88,7 @@ Application web temps réel pour le suivi de courses d'orientation. Permet aux *
 ## 📦 Prérequis
 
 - **Node.js** ≥ 20, **npm** ≥ 9
-- Accès réseau à l'API externe (`http://172.40.1.151:3000`)
+- Accès réseau à l'API externe (`http://172.40.10.150:3000`)
 - *(Optionnel)* Docker + Docker Compose pour déploiement
 
 ---
@@ -112,7 +112,7 @@ cp .env.example .env
 **Fichier `.env` :**
 ```env
 PORT=8787
-API_URL=http://172.40.1.151:3000
+API_URL=http://172.40.10.150:3000
 API_KEY=<votre_clé_api>
 CORS_ORIGINS=http://localhost:5173,http://localhost:5174
 ```
