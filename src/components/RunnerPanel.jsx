@@ -36,7 +36,7 @@ function formatDayLabel(iso) {
 
 export default function RunnerPanel({ runnerSession, races, runnerProgress, runnerLegProgress, permissions = {}, onValidate }) {
   const canSeeBalises = permissions.acces_balises_lecture !== false;
-  const canSeeOrdreBalises = permissions.acces_ordre_balises_lecture !== false;
+  const canSeeOrdreBalises = true;
   const canSeeCourses = permissions.acces_courses_lecture !== false;
 
   const [weatherLoading, setWeatherLoading] = useState(false);

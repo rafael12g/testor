@@ -378,13 +378,20 @@ export async function fetchWeatherForecast(lat, lng) {
       daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
     });
 
-    const res = await safeFetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`, {}, {
+    const url = `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+
+    const res = await safeFetch(url, {}, {
       fallback: null,
       timeout: 9000,
       skipAuth: true,
     });
 
-    if (!res || !res.ok) return null;
+    if (!res || !res.ok) {
+      // Fallback frontend direct (sans AbortController) pour environnements restrictifs.
+      const raw = await fetch(url, { method: 'GET', cache: 'no-store' }).catch(() => null);
+      if (!raw || !raw.ok) return null;
+      return await raw.json();
+    }
     return await res.json();
   } catch {
     return null;
