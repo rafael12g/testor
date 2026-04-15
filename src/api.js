@@ -361,3 +361,32 @@ export async function fetchAllChronos() {
     return data.chronos || {};
   } catch { return {}; }
 }
+
+export async function fetchWeatherForecast(lat, lng) {
+  try {
+    const safeLat = Number(lat);
+    const safeLng = Number(lng);
+    if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return null;
+
+    const params = new URLSearchParams({
+      latitude: String(safeLat),
+      longitude: String(safeLng),
+      timezone: 'auto',
+      forecast_days: '3',
+      current: 'temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
+      hourly: 'temperature_2m,precipitation_probability,weather_code,wind_speed_10m',
+      daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
+    });
+
+    const res = await safeFetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`, {}, {
+      fallback: null,
+      timeout: 9000,
+      skipAuth: true,
+    });
+
+    if (!res || !res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}

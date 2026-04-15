@@ -800,6 +800,80 @@ select.input {
   font-size: 0.85rem;
 }
 
+.checkpoint--next {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.1);
+  color: #92400e;
+  font-weight: 700;
+}
+
+/* --- RUNNER WEATHER --- */
+.runner-weather-now {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.runner-weather-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.runner-weather-temp {
+  font-size: 1.5rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text);
+}
+
+.runner-weather-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.runner-weather-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.runner-weather-hourly-grid,
+.runner-weather-daily-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.runner-weather-chip,
+.runner-weather-day-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  padding: 0.55rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.runner-weather-chip strong,
+.runner-weather-day-card strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
 /* --- WebSocket Pill --- */
 .ws-pill {
   display: inline-flex;

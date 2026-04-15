@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, Flag, Users, Clock, MapPin, ChevronDown, ChevronUp, Play, Pause, Square, Timer, CheckCircle, RotateCcw } from 'lucide-react';
+import { Activity, Flag, Users, Clock, MapPin, ChevronDown, ChevronUp, Play, Pause, Square, Timer, CheckCircle, RotateCcw, CloudSun, Wind } from 'lucide-react';
 import VueBeaconMap from './VueBeaconMap';
-import { fetchRaceChrono, startRace, pauseRace, resumeRace, stopRace, pauseTeam, resumeTeam, stopTeam, recordCheckpoint, fetchRaceHistory } from '../api';
+import { fetchRaceChrono, startRace, pauseRace, resumeRace, stopRace, pauseTeam, resumeTeam, stopTeam, recordCheckpoint, fetchRaceHistory, fetchWeatherForecast } from '../api';
 import { DEFAULT_START } from '../utils/helpers';
 
 function formatElapsed(ms) {
@@ -11,6 +11,34 @@ function formatElapsed(ms) {
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function weatherCodeToLabel(code) {
+  const c = Number(code);
+  if (c === 0) return 'Ensoleillé';
+  if (c === 1) return 'Peu nuageux';
+  if (c === 2) return 'Partiellement nuageux';
+  if (c === 3) return 'Couvert';
+  if (c === 45 || c === 48) return 'Brouillard';
+  if ([51, 53, 55, 56, 57].includes(c)) return 'Bruine';
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(c)) return 'Pluie';
+  if ([71, 73, 75, 77, 85, 86].includes(c)) return 'Neige';
+  if ([95, 96, 99].includes(c)) return 'Orage';
+  return 'Conditions variables';
+}
+
+function formatHourLabel(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDayLabel(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' });
 }
 
 function LiveChrono({ startedAt, resumedAt, elapsed = 0, state = 'stopped' }) {
@@ -34,6 +62,9 @@ export default function OrgaPanel({ races }) {
   const [expandedTeam, setExpandedTeam] = useState(null);
   const [raceHistory, setRaceHistory] = useState([]);
   const [starting, setStarting] = useState(false);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [weatherError, setWeatherError] = useState('');
+  const [weatherData, setWeatherData] = useState(null);
   const pollRef = useRef(null);
 
   // Sync selected race quand les courses changent
@@ -67,6 +98,46 @@ export default function OrgaPanel({ races }) {
     poll();
     const id = setInterval(poll, 4000);
     return () => clearInterval(id);
+  }, [selectedRace]);
+
+  useEffect(() => {
+    if (!selectedRace) {
+      setWeatherData(null);
+      setWeatherError('');
+      setWeatherLoading(false);
+      return;
+    }
+
+    const start = selectedRace.start || DEFAULT_START;
+    const lat = Number(start?.lat);
+    const lng = Number(start?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      setWeatherData(null);
+      setWeatherError('Coordonnées de départ invalides.');
+      return;
+    }
+
+    let cancelled = false;
+    const loadWeather = async () => {
+      setWeatherLoading(true);
+      setWeatherError('');
+      const data = await fetchWeatherForecast(lat, lng);
+      if (cancelled) return;
+      if (!data) {
+        setWeatherData(null);
+        setWeatherError('Météo indisponible pour cette course.');
+      } else {
+        setWeatherData(data);
+      }
+      setWeatherLoading(false);
+    };
+
+    loadWeather();
+    const id = setInterval(loadWeather, 15 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, [selectedRace]);
 
   const handleStartRace = async () => {
@@ -132,6 +203,36 @@ export default function OrgaPanel({ races }) {
   const getTeamChrono = (teamCode) => {
     return chrono?.teamChronos?.[teamCode] || null;
   };
+
+  const hourlyForecast = (() => {
+    const times = weatherData?.hourly?.time || [];
+    const temps = weatherData?.hourly?.temperature_2m || [];
+    const rainProb = weatherData?.hourly?.precipitation_probability || [];
+    const codes = weatherData?.hourly?.weather_code || [];
+    const wind = weatherData?.hourly?.wind_speed_10m || [];
+    const now = Date.now();
+    const out = [];
+    for (let i = 0; i < times.length; i += 1) {
+      const ts = new Date(times[i]).getTime();
+      if (!Number.isFinite(ts) || ts < now) continue;
+      out.push({ time: times[i], temp: temps[i], rainProb: rainProb[i], code: codes[i], wind: wind[i] });
+      if (out.length >= 8) break;
+    }
+    return out;
+  })();
+
+  const dailyForecast = (() => {
+    const times = weatherData?.daily?.time || [];
+    const max = weatherData?.daily?.temperature_2m_max || [];
+    const min = weatherData?.daily?.temperature_2m_min || [];
+    const rain = weatherData?.daily?.precipitation_probability_max || [];
+    const codes = weatherData?.daily?.weather_code || [];
+    const out = [];
+    for (let i = 0; i < times.length && i < 3; i += 1) {
+      out.push({ time: times[i], max: max[i], min: min[i], rainProb: rain[i], code: codes[i] });
+    }
+    return out;
+  })();
 
   return (
     <div className="stack-lg">
@@ -212,6 +313,63 @@ export default function OrgaPanel({ races }) {
                 </div>
               </div>
             </div>
+          </section>
+
+          <section className="card">
+            <h3 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <CloudSun size={18} style={{ color: 'var(--info)' }} /> Météo course
+            </h3>
+            <p className="muted">Prévisions à venir pour la zone de départ.</p>
+
+            {weatherLoading && <p className="muted">Chargement météo…</p>}
+            {!weatherLoading && weatherError && <p className="muted">{weatherError}</p>}
+
+            {!weatherLoading && !weatherError && weatherData?.current && (
+              <div className="runner-weather-now" style={{ marginTop: '0.5rem' }}>
+                <div className="runner-weather-main">
+                  <div className="runner-weather-temp">{Math.round(weatherData.current.temperature_2m)}°C</div>
+                  <div className="muted">{weatherCodeToLabel(weatherData.current.weather_code)}</div>
+                </div>
+                <div className="runner-weather-meta">
+                  <span><Wind size={14} /> {Math.round(weatherData.current.wind_speed_10m || 0)} km/h</span>
+                  <span>Humidité {Math.round(weatherData.current.relative_humidity_2m || 0)}%</span>
+                  <span>Précip. {Math.round(weatherData.current.precipitation || 0)} mm</span>
+                </div>
+              </div>
+            )}
+
+            {!weatherLoading && !weatherError && hourlyForecast.length > 0 && (
+              <>
+                <p className="muted" style={{ marginTop: '0.85rem', marginBottom: '0.35rem' }}>Heures à venir</p>
+                <div className="runner-weather-hourly-grid">
+                  {hourlyForecast.map((h, i) => (
+                    <div key={`${h.time}-${i}`} className="runner-weather-chip">
+                      <strong>{formatHourLabel(h.time)}</strong>
+                      <span>{Math.round(h.temp)}°C</span>
+                      <span>{weatherCodeToLabel(h.code)}</span>
+                      <span>🌧 {Math.round(h.rainProb || 0)}%</span>
+                      <span>💨 {Math.round(h.wind || 0)} km/h</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {!weatherLoading && !weatherError && dailyForecast.length > 0 && (
+              <>
+                <p className="muted" style={{ marginTop: '0.85rem', marginBottom: '0.35rem' }}>Prochains 3 jours</p>
+                <div className="runner-weather-daily-grid">
+                  {dailyForecast.map((d, i) => (
+                    <div key={`${d.time}-${i}`} className="runner-weather-day-card">
+                      <strong>{formatDayLabel(d.time)}</strong>
+                      <span>{weatherCodeToLabel(d.code)}</span>
+                      <span>{Math.round(d.min)}°C / {Math.round(d.max)}°C</span>
+                      <span>Pluie max: {Math.round(d.rainProb || 0)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </section>
 
           {/* Ordre des balises */}
