@@ -18,11 +18,12 @@ function nextId() { return idCounter++; }
 
 let raceChronos = {};            // { [raceId]: { startedAt, teamChronos: { [teamCode]: { startedAt, checkpoints: [{index, time}] } } } }
 
-export async function registerOrga(username, password) {
+export async function registerOrga(username, password, authToken = null) {
   if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
   try {
     const headers = { 'Content-Type': 'application/json' };
-    if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    else if (process.env.API_KEY) headers['Authorization'] = `ApiKey ${process.env.API_KEY}`;
 
     const res = await fetch(`${apiUrl}/api/auth/register`, {
       method: 'POST',
@@ -127,7 +128,7 @@ export async function loginOrga(username, password) {
     }
 
     console.log(`Orga connecté via API → ${username} ✅`);
-    return { ok: true, role: 'orga', account: account || { username } };
+    return { ok: true, role: 'orga', account: account || { username }, token: token || null, permissions: data.permissions || null };
   } catch (err) {
     console.warn(`Login orga échoué: ${err.message}`);
     return { ok: false, error: 'Erreur de connexion à l\'API' };
@@ -216,9 +217,10 @@ function parseAccount(raw) {
   };
 }
 
-async function apiRawFetch(endpoint, { method = 'GET', body } = {}) {
+async function apiRawFetch(endpoint, { method = 'GET', body, authToken = null } = {}) {
   if (!apiUrl) throw new Error('API non configurée (API_URL manquant)');
   const authHeaders = [];
+  if (authToken) authHeaders.push({ 'Authorization': `Bearer ${authToken}` });
   if (adminAuthToken) authHeaders.push({ 'Authorization': `Bearer ${adminAuthToken}` });
   if (process.env.API_KEY) authHeaders.push({ 'Authorization': `ApiKey ${process.env.API_KEY}` });
   if (authHeaders.length === 0) throw new Error('Aucun moyen d\'authentification API disponible');
@@ -247,7 +249,7 @@ async function apiRawFetch(endpoint, { method = 'GET', body } = {}) {
   return last || { ok: false, status: 500, data: null };
 }
 
-export async function listOrgaAccountsApi() {
+export async function listOrgaAccountsApi(authToken = null) {
   if (!isApiAvailable()) throw new Error('API externe non configurée ou indisponible');
 
   const endpoints = ['/api/utilisateurs', '/api/users', '/api/accounts', '/api/comptes'];
@@ -255,7 +257,7 @@ export async function listOrgaAccountsApi() {
 
   for (const endpoint of endpoints) {
     try {
-      const res = await apiRawFetch(endpoint, { method: 'GET' });
+      const res = await apiRawFetch(endpoint, { method: 'GET', authToken });
       if (!res?.ok) {
         lastErr = new Error(`API ${res?.status || 500} sur ${endpoint}`);
         continue;
@@ -285,12 +287,12 @@ export async function listOrgaAccountsApi() {
   throw lastErr || new Error('Impossible de lire les comptes organisateurs');
 }
 
-export async function deleteOrgaAccountApi(identifier) {
+export async function deleteOrgaAccountApi(identifier, authToken = null) {
   if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
   const target = String(identifier || '').trim();
   if (!target) return { ok: false, error: 'Identifiant organisateur manquant' };
 
-  const orgaAccounts = await listOrgaAccountsApi().catch(() => []);
+  const orgaAccounts = await listOrgaAccountsApi(authToken).catch(() => []);
   const account = orgaAccounts.find(a => String(a.id) === target || String(a.username || '').toLowerCase() === target.toLowerCase());
   if (!account) return { ok: false, error: 'Compte organisateur introuvable' };
 
@@ -309,21 +311,21 @@ export async function deleteOrgaAccountApi(identifier) {
   ];
 
   for (const a of attempts) {
-    const res = await apiRawFetch(a.endpoint, { method: a.method }).catch(() => null);
+    const res = await apiRawFetch(a.endpoint, { method: a.method, authToken }).catch(() => null);
     if (res?.ok) return { ok: true };
   }
 
   return { ok: false, error: 'Suppression non supportée par l\'API externe' };
 }
 
-export async function updateOrgaPasswordApi(identifier, newPassword) {
+export async function updateOrgaPasswordApi(identifier, newPassword, authToken = null) {
   if (!isApiAvailable()) return { ok: false, error: 'API externe non configurée ou indisponible' };
   const target = String(identifier || '').trim();
   const password = String(newPassword || '');
   if (!target) return { ok: false, error: 'Identifiant organisateur manquant' };
   if (password.length < 4) return { ok: false, error: 'Mot de passe trop court (4 caractères min)' };
 
-  const orgaAccounts = await listOrgaAccountsApi().catch(() => []);
+  const orgaAccounts = await listOrgaAccountsApi(authToken).catch(() => []);
   const account = orgaAccounts.find(a => String(a.id) === target || String(a.username || '').toLowerCase() === target.toLowerCase());
   if (!account) return { ok: false, error: 'Compte organisateur introuvable' };
 
@@ -344,7 +346,7 @@ export async function updateOrgaPasswordApi(identifier, newPassword) {
   ];
 
   for (const a of attempts) {
-    const res = await apiRawFetch(a.endpoint, { method: a.method, body: a.body }).catch(() => null);
+    const res = await apiRawFetch(a.endpoint, { method: a.method, body: a.body, authToken }).catch(() => null);
     if (res?.ok) return { ok: true };
   }
 
@@ -573,6 +575,10 @@ export async function getRaceHistory(raceId, limit = 50) {
 let apiUrl = null;
 let apiReady = false; // vrai si le serveur API répond (même 401/403), faux uniquement si hors ligne
 
+function sameId(a, b) {
+  return String(a ?? '').trim() === String(b ?? '').trim();
+}
+
 export async function initApi() {
   const url = (process.env.API_URL || '').trim();
   if (!url) {
@@ -583,10 +589,9 @@ export async function initApi() {
   apiUrl = url.replace(/\/+$/, '');
   // Vérifier que le serveur est joignable — toute réponse HTTP = serveur actif
   try {
-    const res = await fetch(`${apiUrl}/api/courses`, {
-      headers: { 'Authorization': `ApiKey ${process.env.API_KEY || ''}` },
-      signal: AbortSignal.timeout(5000),
-    });
+    const headers = {};
+    if (process.env.API_KEY) headers.Authorization = `ApiKey ${process.env.API_KEY}`;
+    const res = await fetch(`${apiUrl}/api/courses`, { headers, signal: AbortSignal.timeout(5000) });
     // Toute réponse HTTP (même 401/403) signifie que le serveur est joignable
     apiReady = true;
     if (res.ok) {
@@ -601,28 +606,43 @@ export async function initApi() {
   }
 }
 
-export function isApiAvailable() { return !!apiUrl && !!process.env.API_KEY && apiReady; }
+export function isApiAvailable() { return !!apiUrl && apiReady; }
 
-export async function apiFetch(endpoint, options = {}) {
+export async function apiFetch(endpoint, options = {}, authToken = null) {
   if (!apiUrl) throw new Error('API non configurée (API_URL manquant)');
-  if (!process.env.API_KEY) throw new Error('API_KEY manquante');
+  if (!authToken && !process.env.API_KEY) throw new Error('Aucun moyen d\'authentification API disponible');
 
-  const headers = {
+  const baseHeaders = {
     'Content-Type': 'application/json',
-    'Authorization': `ApiKey ${process.env.API_KEY}`,
     ...options.headers,
   };
 
-  const res = await fetch(`${apiUrl}${endpoint}`, { ...options, headers, signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-  return res.json();
+  const attempts = [];
+  if (baseHeaders.Authorization) {
+    attempts.push(baseHeaders.Authorization);
+  } else {
+    if (authToken) attempts.push(`Bearer ${authToken}`);
+    if (process.env.API_KEY) attempts.push(`ApiKey ${process.env.API_KEY}`);
+  }
+
+  let lastRes = null;
+  for (const authorization of attempts) {
+    const headers = { ...baseHeaders, Authorization: authorization };
+    const res = await fetch(`${apiUrl}${endpoint}`, { ...options, headers, signal: AbortSignal.timeout(8000) });
+    if (res.ok) return res.json();
+    lastRes = res;
+    if (res.status === 401 || res.status === 403) continue;
+    break;
+  }
+
+  throw new Error(`API ${lastRes?.status || 500}: ${lastRes?.statusText || 'Erreur'}`);
 }
 
 // ─── Courses ───
 
-export async function getCoursesApi() {
+export async function getCoursesApi(authToken = null) {
   if (!isApiAvailable()) return [];
-  const data = await apiFetch('/api/courses');
+  const data = await apiFetch('/api/courses', {}, authToken);
   const courses = Array.isArray(data) ? data : (data.data || data.value || data.courses || []);
   if (!Array.isArray(courses)) return [];
   const result = [];
@@ -630,13 +650,13 @@ export async function getCoursesApi() {
   // Charger toutes les équipes et balises en une fois
   let allEquipes = [];
   try {
-    const eData = await apiFetch('/api/equipes');
+    const eData = await apiFetch('/api/equipes', {}, authToken);
     allEquipes = Array.isArray(eData) ? eData : (eData.data || eData.value || []);
   } catch {}
 
   let allBalises = [];
   try {
-    const bData = await apiFetch('/api/balises');
+    const bData = await apiFetch('/api/balises', {}, authToken);
     allBalises = Array.isArray(bData) ? bData : (bData.data || bData.value || []);
   } catch {}
 
@@ -644,7 +664,7 @@ export async function getCoursesApi() {
     // Récupérer les balises ordonnées pour cette course
     let ordreBalises = [];
     try {
-      const obData = await apiFetch(`/api/ordre-balises/course/${course.id}`);
+      const obData = await apiFetch(`/api/ordre-balises/course/${course.id}`, {}, authToken);
       ordreBalises = Array.isArray(obData) ? obData : (obData.data || obData.value || []);
     } catch {}
 
@@ -657,14 +677,14 @@ export async function getCoursesApi() {
         checkpoints.push({ lat: Number(ob.latitude), lng: Number(ob.longitude) });
       } else {
         const bId = ob.id_balise || ob.balise_id;
-        const found = allBalises.find(b => b.id === bId);
+        const found = allBalises.find(b => sameId(b.id, bId));
         if (found) checkpoints.push({ lat: Number(found.latitude), lng: Number(found.longitude) });
       }
     }
 
     // Équipes liées à cette course
     const equipes = allEquipes.filter(eq =>
-      eq.id_course_actuelle === course.id || eq.course_id === course.id || eq.id_course === course.id
+      sameId(eq.id_course_actuelle, course.id) || sameId(eq.course_id, course.id) || sameId(eq.id_course, course.id)
     );
 
     const startLat = checkpoints[0]?.lat ?? 44.837789;
@@ -688,18 +708,23 @@ export async function getCoursesApi() {
 
 // ─── Rejoindre par code ───
 
-export async function getTeamByCodeApi(code) {
+export async function getTeamByCodeApi(code, authToken = null) {
   if (!isApiAvailable()) return null;
   const normalizedCode = String(code || '').trim().toUpperCase();
   if (!normalizedCode) return null;
+  const getEntityId = (obj) => obj?.id ?? obj?.id_course ?? obj?.course_id ?? obj?.idCourse ?? obj?.courseId ?? null;
 
   // Chercher le code dans /api/codes (champs: id_code, nomcode, valeur_code, id_course, id_equipe, nom_course, nom_equipe)
   let codeEntry = null;
   try {
-    const codesData = await apiFetch('/api/codes');
+    const codesData = await apiFetch('/api/codes', {}, authToken);
     const codes = Array.isArray(codesData) ? codesData : (codesData.data || codesData.value || []);
     // Si l'API renvoie un objet unique au lieu d'un tableau
-    const codeList = Array.isArray(codes) ? codes : [codesData];
+    const codeList = Array.isArray(codes)
+      ? codes
+      : (codes && typeof codes === 'object')
+        ? [codes]
+        : [codesData].filter(Boolean);
 
     codeEntry = codeList.find(c => {
       const candidates = [
@@ -723,8 +748,8 @@ export async function getTeamByCodeApi(code) {
   }
 
   // On a directement id_course et id_equipe dans le code
-  const courseId = codeEntry.id_course;
-  const equipeId = codeEntry.id_equipe;
+  const courseId = codeEntry.id_course ?? codeEntry.course_id ?? codeEntry.idCourse ?? codeEntry.courseId;
+  const equipeId = codeEntry.id_equipe ?? codeEntry.equipe_id ?? codeEntry.team_id ?? codeEntry.teamId;
 
   if (!courseId) {
     console.warn('Code trouvé mais pas de course associée');
@@ -734,26 +759,37 @@ export async function getTeamByCodeApi(code) {
   // Récupérer les détails de la course
   let course = null;
   try {
-    const cData = await apiFetch('/api/courses');
+    const cData = await apiFetch('/api/courses', {}, authToken);
     const courses = Array.isArray(cData) ? cData : (cData.data || cData.value || []);
-    const courseList = Array.isArray(courses) ? courses : [cData];
-    course = courseList.find(c => c.id === courseId);
+    const courseList = Array.isArray(courses)
+      ? courses
+      : (courses && typeof courses === 'object')
+        ? [courses]
+        : [cData].filter(Boolean);
+    course = courseList.find(c => sameId(getEntityId(c), courseId));
   } catch {}
   if (!course) {
-    console.warn(`Course ${courseId} introuvable`);
-    return null;
+    // Fallback: certaines API exposent /api/courses/:id mais pas forcément la course dans /api/courses
+    try {
+      const cOne = await apiFetch(`/api/courses/${courseId}`, {}, authToken);
+      course = cOne?.data && !Array.isArray(cOne.data) ? cOne.data : cOne;
+    } catch {}
+  }
+  if (!course) {
+    console.warn(`Course ${courseId} introuvable dans /api/courses, fallback sur les données du code`);
+    course = { id: courseId, nom_course: codeEntry.nom_course || null };
   }
 
   // Récupérer les balises ordonnées + toutes les balises
   let checkpoints = [];
   try {
-    const obData = await apiFetch(`/api/ordre-balises/course/${course.id}`);
+    const obData = await apiFetch(`/api/ordre-balises/course/${course.id}`, {}, authToken);
     const ordreBalises = Array.isArray(obData) ? obData : (obData.data || obData.value || []);
     const obList = Array.isArray(ordreBalises) ? ordreBalises : [];
 
     let allBalises = [];
     try {
-      const bData = await apiFetch('/api/balises');
+      const bData = await apiFetch('/api/balises', {}, authToken);
       allBalises = Array.isArray(bData) ? bData : (bData.data || bData.value || []);
       if (!Array.isArray(allBalises)) allBalises = [];
     } catch {}
@@ -765,7 +801,7 @@ export async function getTeamByCodeApi(code) {
         checkpoints.push({ lat: Number(ob.latitude), lng: Number(ob.longitude) });
       } else {
         const bId = ob.id_balise || ob.balise_id;
-        const found = allBalises.find(b => b.id === bId);
+        const found = allBalises.find(b => sameId(b.id, bId));
         if (found) checkpoints.push({ lat: Number(found.latitude), lng: Number(found.longitude) });
       }
     }
@@ -780,8 +816,8 @@ export async function getTeamByCodeApi(code) {
       code: normalizedCode,
     },
     course: {
-      id: course.id,
-      name: codeEntry.nom_course || course.nom_course || course.nom || `Course ${course.id}`,
+      id: getEntityId(course) ?? courseId,
+      name: codeEntry.nom_course || course.nom_course || course.nom || course.name || `Course ${getEntityId(course) ?? courseId}`,
       start: { lat: Number(startLat), lng: Number(startLng) },
       checkpoints,
     },
@@ -958,9 +994,129 @@ export async function loginViaApi(username, password) {
     }
 
     console.log(`Admin connecté via API → ${username} ✅`);
-    return { ok: true, permissions: data.permissions || { admin: true }, account };
+    return { ok: true, permissions: data.permissions || { admin: true }, account, token: token || null };
   } catch (err) {
     console.warn(`Échec login admin: ${err.message}`);
     return { ok: false, error: 'Erreur de connexion à l\'API' };
+  }
+}
+
+export async function loginViaToken(token, requiredRole = 'any') {
+  if (!isApiAvailable()) {
+    return { ok: false, error: 'API externe non configurée (API_URL manquant)' };
+  }
+
+  const jwt = String(token || '').trim();
+  if (!jwt) return { ok: false, error: 'Token JWT requis' };
+
+  const decodeJwtPayload = (rawToken) => {
+    try {
+      const parts = String(rawToken || '').split('.');
+      if (parts.length < 2) return null;
+      const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+      const json = Buffer.from(padded, 'base64').toString('utf8');
+      return JSON.parse(json);
+    } catch {
+      return null;
+    }
+  };
+
+  const tokenPayload = decodeJwtPayload(jwt);
+
+  const pickAccountInPayload = (payload) => {
+    if (!payload || typeof payload !== 'object') return null;
+    const direct = payload.account || payload.user || payload.utilisateur || payload.data;
+    if (direct && typeof direct === 'object' && !Array.isArray(direct)) return direct;
+
+    const list = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload.items)
+        ? payload.items
+        : Array.isArray(payload.users)
+          ? payload.users
+          : Array.isArray(payload.utilisateurs)
+            ? payload.utilisateurs
+            : Array.isArray(payload.data)
+              ? payload.data
+              : null;
+
+    return Array.isArray(list) && list.length > 0 ? list[0] : null;
+  };
+
+  const fetchAccountFromApi = async () => {
+    const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` };
+    const endpoints = [
+      '/api/auth/me',
+      '/api/users/me',
+      '/api/utilisateurs/me',
+      '/api/me',
+      '/api/user',
+      '/api/utilisateurs',
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(`${apiUrl}${endpoint}`, {
+          method: 'GET',
+          headers: authHeaders,
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) continue;
+        const data = await res.json().catch(() => null);
+        const account = pickAccountInPayload(data);
+        if (account) return { account, data };
+      } catch {
+        // endpoint suivant
+      }
+    }
+
+    return { account: null, data: null };
+  };
+
+  try {
+    const { account: accountFromApi, data: meData } = await fetchAccountFromApi();
+    const account = accountFromApi || { username: tokenPayload?.username || tokenPayload?.sub || 'Utilisateur' };
+
+    const roleValues = [];
+    collectRoleValues(meData?.role, roleValues);
+    collectRoleValues(meData?.roles, roleValues);
+    collectRoleValues(meData?.user?.role, roleValues);
+    collectRoleValues(meData?.user?.roles, roleValues);
+    collectRoleValues(meData?.account?.role, roleValues);
+    collectRoleValues(meData?.account?.roles, roleValues);
+    collectRoleValues(account?.role, roleValues);
+    collectRoleValues(account?.roles, roleValues);
+    collectRoleValues(account?.profil, roleValues);
+    collectRoleValues(account?.type, roleValues);
+    collectRoleValues(tokenPayload?.role, roleValues);
+    collectRoleValues(tokenPayload?.roles, roleValues);
+    collectRoleValues(tokenPayload?.authorities, roleValues);
+    collectRoleValues(tokenPayload?.scope, roleValues);
+
+    const adminRoleSet = new Set(['admin', 'administrateur', 'role_admin', 'superadmin', 'super_admin']);
+    const orgaRoleSet = new Set(['organisateur', 'orga', 'organizer', 'role_organisateur', 'role_orga']);
+    const isAdmin = roleValues.some(r => adminRoleSet.has(r));
+    const isOrga = roleValues.some(r => orgaRoleSet.has(r));
+
+    if (requiredRole === 'admin' && !isAdmin) {
+      return { ok: false, error: 'Compte non autorisé pour l\'espace admin' };
+    }
+    if (requiredRole === 'orga' && !isOrga) {
+      return { ok: false, error: 'Compte non autorisé pour l\'espace organisateur' };
+    }
+
+    if (isAdmin) adminAuthToken = jwt;
+
+    const role = isAdmin ? 'admin' : (isOrga ? 'orga' : 'user');
+    return {
+      ok: true,
+      role,
+      account,
+      permissions: meData?.permissions || (isAdmin ? { admin: true } : null),
+      token: jwt,
+    };
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Token JWT invalide' };
   }
 }

@@ -1,11 +1,21 @@
 const BASE_URL = '/api';
+let sessionToken = null;
+
+export function setSessionToken(token) {
+  const next = String(token || '').trim();
+  sessionToken = next || null;
+}
 
 /** Helper : fetch with timeout + graceful network error handling */
-async function safeFetch(url, options = {}, { timeout = 8000, fallback = null } = {}) {
+async function safeFetch(url, options = {}, { timeout = 8000, fallback = null, skipAuth = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
+    const headers = { ...(options.headers || {}) };
+    if (!skipAuth && sessionToken && !headers.Authorization) {
+      headers.Authorization = `Bearer ${sessionToken}`;
+    }
+    const res = await fetch(url, { ...options, headers, signal: controller.signal });
     clearTimeout(timer);
     return res;
   } catch (err) {
@@ -92,16 +102,60 @@ export async function pingBackendHealth() {
   return response.json();
 }
 
+export async function fetchCourses() {
+  try {
+    const res = await safeFetch(`${BASE_URL}/courses`, {}, { fallback: [] });
+    if (!res || !res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.items) ? data.items : [];
+  } catch { return []; }
+}
+
+export async function fetchTeamByCode(code) {
+  try {
+    const normalized = encodeURIComponent(String(code || '').trim().toUpperCase());
+    if (!normalized) return { ok: false, error: 'Code requis' };
+    const res = await safeFetch(`${BASE_URL}/teams/code/${normalized}`, {}, { fallback: null });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || 'Code introuvable ou course inactive.' };
+    const payload = data?.data || data;
+    if (payload?.ok === false) return payload;
+    if (payload?.team && payload?.course) return { ok: true, ...payload };
+    return { ok: false, error: payload?.error || 'Réponse invalide du serveur' };
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
 export async function loginAdmin(username, password) {
   try {
+    setSessionToken(null);
     const res = await safeFetch(`${BASE_URL}/auth/admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
-    });
+    }, { skipAuth: true });
     if (!res) return { ok: false, error: 'Backend indisponible' };
     const data = await res.json();
     if (!res.ok) return { ok: false, error: data.error || 'Identifiants incorrects' };
+    setSessionToken(data.token || data.accessToken || data.jwt || data.access_token || null);
+    return data;
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
+export async function loginAdminWithToken(token) {
+  try {
+    setSessionToken(null);
+    const jwt = String(token || '').trim();
+    if (!jwt) return { ok: false, error: 'Token JWT requis' };
+    const res = await safeFetch(`${BASE_URL}/auth/admin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: jwt }),
+    }, { skipAuth: true });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || 'Token JWT invalide' };
+    setSessionToken(data.token || jwt);
     return data;
   } catch { return { ok: false, error: 'Erreur réseau' }; }
 }
@@ -124,14 +178,34 @@ export async function registerOrga(username, password) {
 
 export async function loginOrga(username, password) {
   try {
+    setSessionToken(null);
     const res = await safeFetch(`${BASE_URL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
-    });
+    }, { skipAuth: true });
     if (!res) return { ok: false, error: 'Backend indisponible' };
     const data = await res.json();
     if (!res.ok) return { ok: false, error: data.error || 'Identifiants incorrects' };
+    setSessionToken(data.token || data.accessToken || data.jwt || data.access_token || null);
+    return data;
+  } catch { return { ok: false, error: 'Erreur réseau' }; }
+}
+
+export async function loginOrgaWithToken(token) {
+  try {
+    setSessionToken(null);
+    const jwt = String(token || '').trim();
+    if (!jwt) return { ok: false, error: 'Token JWT requis' };
+    const res = await safeFetch(`${BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: jwt }),
+    }, { skipAuth: true });
+    if (!res) return { ok: false, error: 'Backend indisponible' };
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error || 'Token JWT invalide' };
+    setSessionToken(data.token || jwt);
     return data;
   } catch { return { ok: false, error: 'Erreur réseau' }; }
 }
@@ -286,4 +360,40 @@ export async function fetchAllChronos() {
     const data = await res.json();
     return data.chronos || {};
   } catch { return {}; }
+}
+
+export async function fetchWeatherForecast(lat, lng) {
+  try {
+    const safeLat = Number(lat);
+    const safeLng = Number(lng);
+    if (!Number.isFinite(safeLat) || !Number.isFinite(safeLng)) return null;
+
+    const params = new URLSearchParams({
+      latitude: String(safeLat),
+      longitude: String(safeLng),
+      timezone: 'auto',
+      forecast_days: '3',
+      current: 'temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m',
+      hourly: 'temperature_2m,precipitation_probability,weather_code,wind_speed_10m',
+      daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
+    });
+
+    const url = `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+
+    const res = await safeFetch(url, {}, {
+      fallback: null,
+      timeout: 9000,
+      skipAuth: true,
+    });
+
+    if (!res || !res.ok) {
+      // Fallback frontend direct (sans AbortController) pour environnements restrictifs.
+      const raw = await fetch(url, { method: 'GET', cache: 'no-store' }).catch(() => null);
+      if (!raw || !raw.ok) return null;
+      return await raw.json();
+    }
+    return await res.json();
+  } catch {
+    return null;
+  }
 }

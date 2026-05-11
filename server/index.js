@@ -16,6 +16,7 @@ import {
   getCoursesApi,
   getTeamByCodeApi,
   loginViaApi,
+  loginViaToken,
   insertBeaconPing,
   insertServerLog,
   insertRaceEvent,
@@ -50,6 +51,12 @@ let lastKnownApiAvailability = null;
 
 function clamp(v, lo, hi) { return Math.min(Math.max(v, lo), hi); }
 function toNum(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function getBearerToken(req) {
+  const raw = String(req.headers?.authorization || '').trim();
+  if (!raw.toLowerCase().startsWith('bearer ')) return null;
+  const token = raw.slice(7).trim();
+  return token || null;
+}
 
 function broadcast(type, payload) {
   const msg = JSON.stringify({ type, payload, timestamp: Date.now() });
@@ -106,13 +113,16 @@ app.use('/api', apiLimiter);
 // ─── routes ───
 
 app.post('/api/auth/admin', authLimiter, async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  const { username, password, token } = req.body || {};
+  const providedToken = String(token || getBearerToken(req) || '').trim();
+  if (!providedToken && (!username || !password)) return res.status(400).json({ ok: false, error: 'Identifiants requis (username/password ou token JWT)' });
   if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
   try {
-    const result = await loginViaApi(username, password);
+    const result = providedToken
+      ? await loginViaToken(providedToken, 'admin')
+      : await loginViaApi(username, password);
     if (!result.ok) return res.status(401).json({ ok: false, error: result.error || 'Identifiants incorrects' });
-    return res.json({ ok: true, permissions: result.permissions || null, account: result.account || null });
+    return res.json({ ok: true, permissions: result.permissions || null, account: result.account || null, token: result.token || null });
   } catch (err) {
     return res.status(500).json({ ok: false, error: 'Erreur de connexion à l\'API' });
   }
@@ -128,11 +138,12 @@ const orgaRegisterLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5, standa
 
 app.post('/api/auth/register', orgaRegisterLimiter, async (req, res) => {
   const { username, password } = req.body || {};
+  const token = getBearerToken(req);
   if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
   if (username.length < 3 || username.length > 30) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur entre 3 et 30 caractères' });
   if (password.length < 4) return res.status(400).json({ ok: false, error: 'Mot de passe trop court (4 caractères minimum)' });
   try {
-    const result = await registerOrga(username, password);
+    const result = await registerOrga(username, password, token);
     if (!result.ok) return res.status(429).json(result);
     await log('info', `Compte orga créé: ${username}`, { username });
     return res.status(201).json(result);
@@ -148,14 +159,18 @@ app.get('/api/auth/register-info', (_req, res) => {
 // --- Organisateur : connexion ---
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ ok: false, error: 'Nom d\'utilisateur et mot de passe requis' });
+  const { username, password, token } = req.body || {};
+  const providedToken = String(token || getBearerToken(req) || '').trim();
+  if (!providedToken && (!username || !password)) return res.status(400).json({ ok: false, error: 'Identifiants requis (username/password ou token JWT)' });
   if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
   try {
-    const result = await loginOrga(username, password);
+    const result = providedToken
+      ? await loginViaToken(providedToken, 'orga')
+      : await loginOrga(username, password);
     if (!result.ok) return res.status(401).json(result);
-    await log('info', `Orga connecté: ${username}`, { username });
-    return res.json(result);
+    const orgaName = result.account?.username || username || 'orga';
+    await log('info', `Orga connecté: ${orgaName}`, { username: orgaName });
+    return res.json({ ...result, token: result.token || null });
   } catch (err) {
     return res.status(500).json({ ok: false, error: 'Erreur serveur' });
   }
@@ -163,10 +178,11 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
 // --- Admin : gestion comptes organisateurs via API externe ---
 
-app.get('/api/admin/organisateurs', async (_req, res) => {
+app.get('/api/admin/organisateurs', async (req, res) => {
   if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  const token = getBearerToken(req);
   try {
-    const items = await listOrgaAccountsApi();
+    const items = await listOrgaAccountsApi(token);
     return res.json({ ok: true, items, count: items.length });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err?.message || 'Erreur lecture comptes organisateurs' });
@@ -175,10 +191,11 @@ app.get('/api/admin/organisateurs', async (_req, res) => {
 
 app.delete('/api/admin/organisateurs/:identifier', async (req, res) => {
   if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  const token = getBearerToken(req);
   const identifier = String(req.params.identifier || '').trim();
   if (!identifier) return res.status(400).json({ ok: false, error: 'Identifiant requis' });
   try {
-    const result = await deleteOrgaAccountApi(identifier);
+    const result = await deleteOrgaAccountApi(identifier, token);
     if (!result.ok) return res.status(400).json(result);
     await log('warn', `Compte orga supprimé: ${identifier}`, { identifier });
     return res.json({ ok: true });
@@ -189,12 +206,13 @@ app.delete('/api/admin/organisateurs/:identifier', async (req, res) => {
 
 app.patch('/api/admin/organisateurs/:identifier/password', async (req, res) => {
   if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  const token = getBearerToken(req);
   const identifier = String(req.params.identifier || '').trim();
   const newPassword = String(req.body?.password || '').trim();
   if (!identifier) return res.status(400).json({ ok: false, error: 'Identifiant requis' });
   if (!newPassword) return res.status(400).json({ ok: false, error: 'Nouveau mot de passe requis' });
   try {
-    const result = await updateOrgaPasswordApi(identifier, newPassword);
+    const result = await updateOrgaPasswordApi(identifier, newPassword, token);
     if (!result.ok) return res.status(400).json(result);
     await log('warn', `Mot de passe orga modifié: ${identifier}`, { identifier });
     return res.json({ ok: true });
@@ -429,10 +447,11 @@ app.get('/api/history', async (req, res) => {
 
 // --- Courses (lecture seule depuis PostgreSQL) ---
 
-app.get('/api/courses', async (_req, res) => {
+app.get('/api/courses', async (req, res) => {
   if (!isApiAvailable()) return res.json({ ok: true, items: [], count: 0 });
+  const token = getBearerToken(req);
   try {
-    const items = await getCoursesApi();
+    const items = await getCoursesApi(token);
     res.json({ ok: true, items, count: items.length });
   } catch (err) {
     await log('error', 'Erreur lecture courses API', { error: String(err?.message || err) });
@@ -442,10 +461,11 @@ app.get('/api/courses', async (_req, res) => {
 
 app.get('/api/teams/code/:code', async (req, res) => {
   const code = String(req.params.code || '').trim().toUpperCase();
+  const token = getBearerToken(req);
   if (!code) return res.status(400).json({ ok: false, error: 'Code requis' });
   if (!isApiAvailable()) return res.status(503).json({ ok: false, error: 'API externe non configurée' });
   try {
-    const result = await getTeamByCodeApi(code);
+    const result = await getTeamByCodeApi(code, token);
     if (!result) return res.status(404).json({ ok: false, error: 'Code introuvable ou course inactive' });
     res.json({ ok: true, ...result });
   } catch (err) {
@@ -462,8 +482,19 @@ const distDir = path.resolve(__dirname2, '..', 'dist');
 // Serve built assets (JS, CSS, images…)
 app.use(express.static(distDir));
 
+// Ne pas mettre en cache index.html pour éviter de servir une ancienne version du frontend.
+app.get('/', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.sendFile(path.join(distDir, 'index.html'));
+});
+
 // SPA fallback: any non-API GET → index.html
 app.get('/{*path}', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
