@@ -126,6 +126,26 @@ export async function fetchTeamByCode(code) {
   } catch { return { ok: false, error: 'Erreur réseau' }; }
 }
 
+export async function fetchValidatedBalises(courseId, teamCode) {
+  try {
+    const safeCourseId = encodeURIComponent(String(courseId || '').trim());
+    const safeTeamCode = encodeURIComponent(String(teamCode || '').trim());
+    if (!safeCourseId || !safeTeamCode) return [];
+
+    const res = await safeFetch(`${BASE_URL}/ordre-balises/course/${safeCourseId}/equipe/${safeTeamCode}`, {}, { fallback: [] });
+    if (!res || !res.ok) return [];
+
+    const data = await res.json();
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data.items)) return data.items;
+    if (Array.isArray(data.balises)) return data.balises;
+    if (Array.isArray(data.data)) return data.data;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 export async function loginAdmin(username, password) {
   try {
     setSessionToken(null);

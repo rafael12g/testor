@@ -11,6 +11,7 @@ import {
   getRecentBeaconEvents,
   getServerLogs,
   getRaceHistory,
+  apiFetch,
   initApi,
   isApiAvailable,
   getCoursesApi,
@@ -347,6 +348,29 @@ app.post('/api/orga/courses/:raceId/teams/:teamCode/checkpoint', async (req, res
 
 app.get('/api/orga/chronos', (_req, res) => {
   res.json({ ok: true, chronos: getAllRaceChronos() });
+});
+
+// --- Ordre des balises : validation course/équipe ---
+
+app.get('/api/ordre-balises/course/:idCourse/equipe/:idEquipe', async (req, res) => {
+  const idCourse = String(req.params.idCourse || '').trim();
+  const idEquipe = String(req.params.idEquipe || '').trim();
+
+  if (!idCourse || !idEquipe) {
+    return res.status(400).json({ ok: false, error: 'idCourse et idEquipe requis' });
+  }
+
+  if (!isApiAvailable()) {
+    return res.status(503).json({ ok: false, error: 'API externe non configurée ou indisponible' });
+  }
+
+  try {
+    const token = getBearerToken(req);
+    const data = await apiFetch(`/api/ordre-balises/course/${idCourse}/equipe/${idEquipe}`, {}, token);
+    return res.json(Array.isArray(data) ? data : (data?.data ?? data?.items ?? data));
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || 'Erreur récupération balises validées' });
+  }
 });
 
 // --- Logs (vrais logs stockés en BDD) ---

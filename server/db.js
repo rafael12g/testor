@@ -812,6 +812,7 @@ export async function getTeamByCodeApi(code, authToken = null) {
 
   return {
     team: {
+      id: equipeId,
       name: codeEntry.nom_equipe || `Équipe ${equipeId}`,
       code: normalizedCode,
     },

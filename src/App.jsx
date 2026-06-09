@@ -6,7 +6,7 @@ import AdminPanel from './components/AdminPanel';
 import RunnerPanel from './components/RunnerPanel';
 import OrgaPanel from './components/OrgaPanel';
 import { DEFAULT_START, clamp, normalizeCode } from './utils/helpers';
-import { fetchServerLogs, fetchRaceHistory, fetchCourses, fetchTeamByCode, setSessionToken } from './api';
+import { fetchServerLogs, fetchRaceHistory, fetchCourses, fetchTeamByCode, fetchValidatedBalises, recordCheckpoint, setSessionToken } from './api';
 
 export default function OrienteeringApp() {
   const [user, setUser] = useState(null);
@@ -63,6 +63,31 @@ export default function OrienteeringApp() {
     return () => clearInterval(id);
   }, [user]);
 
+  // ── Runner : synchroniser les balises validées depuis le backend ──
+  useEffect(() => {
+    const teamIdentifier = runnerSession?.teamId || runnerSession?.code;
+    if (user?.role !== 'runner' || !runnerSession?.raceId || !teamIdentifier) return;
+
+    let cancelled = false;
+    const pollValidatedBalises = async () => {
+      try {
+        const validatedBalises = await fetchValidatedBalises(runnerSession.raceId, teamIdentifier);
+        if (cancelled) return;
+        const countValidated = validatedBalises.filter(b => b.est_validee === true).length;
+        setRunnerProgress(countValidated);
+      } catch {
+        if (!cancelled) setRunnerProgress(0);
+      }
+    };
+
+    pollValidatedBalises();
+    const interval = setInterval(pollValidatedBalises, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user, runnerSession?.raceId, runnerSession?.teamId, runnerSession?.code]);
+
   // ── Rejoindre une course par code (lecture API PostgreSQL) ──
   const joinByCode = async (codeInput) => {
     const code = normalizeCode(codeInput);
@@ -79,6 +104,7 @@ export default function OrienteeringApp() {
         raceId: course.id,
         raceName: course.name,
         teamName: team.name,
+        teamId: team.id || team.teamId || team.equipeId || team.id_equipe || null,
         code: team.code,
         order: course.checkpoints || [],
         start: course.start || DEFAULT_START,
@@ -120,10 +146,16 @@ export default function OrienteeringApp() {
             runnerSession={runnerSession} races={races}
             runnerProgress={runnerProgress} runnerLegProgress={runnerLegProgress}
             permissions={user.permissions || {}}
-            onValidate={() => {
+            onValidate={async () => {
               const total = runnerSession?.order?.length || 0;
               if (runnerLegProgress < 1) return;
-              setRunnerProgress(prev => clamp(prev + 1, 0, total));
+              const teamIdentifier = runnerSession?.teamId || runnerSession?.code;
+              if (!runnerSession?.raceId || !teamIdentifier) return;
+              const checkpointIndex = runnerProgress;
+              await recordCheckpoint(runnerSession.raceId, teamIdentifier, checkpointIndex);
+              const validatedBalises = await fetchValidatedBalises(runnerSession.raceId, teamIdentifier);
+              const countValidated = validatedBalises.filter(b => b.est_validee === true).length;
+              setRunnerProgress(countValidated);
               setRunnerLegProgress(0);
             }}
           />
