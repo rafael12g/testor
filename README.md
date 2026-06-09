@@ -2,6 +2,8 @@
 
 Application web temps réel pour le suivi de courses d'orientation. Permet aux **organisateurs** de superviser les courses, aux **participants** (runners) de rejoindre via code d'équipe et consulter la carte en direct, et aux **administrateurs** de superviser l'ensemble du système.
 
+*Dernière mise à jour : correction structure Docker*
+
 **Architecture** : Frontend React + Backend Node.js/Express + API PostgreSQL externe.
 
 ---
